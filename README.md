@@ -29,9 +29,36 @@ Syncs KOReader reading progress into the Onyx Android content provider so progre
 - If the Onyx provider row does not exist, the plugin inserts it.
 - Completion is detected from KOReader summary status or when the last page in the main flow is reached.
 
-## Example with ADB
-- Show all reading progress on all book
+## Bulk Update
+
+The plugin adds a menu entry under **Onyx Progress Sync → Update all books in Onyx library** in KOReader's main menu (☰).
+This scans your entire reading history and pushes progress for every book that has been opened at least once, so the Onyx library shows up-to-date percentages and reading statuses without having to open each book individually.
+
+## ADB Cheat-Sheet
+
+**Query all Onyx metadata (reading progress)**
+
+```sh
 adb shell content query --uri content://com.onyx.content.database.ContentProvider/Metadata
+```
+
+**Query Onyx reading statistics**
+
+```sh
+adb shell content query --uri content://com.onyx.kreader.statistics.provider/OnyxStatisticsModel
+```
+
+**Deploy the plugin during development**
+
+```sh
+adb push ./main.lua /sdcard/koreader/plugins/onyx_sync.koplugin/main.lua
+```
+
+**View plugin logs**
+
+```sh
+adb logcat -s KOReader:*
+```
 
 ## License
 MIT. See [LICENSE](LICENSE).
