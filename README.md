@@ -16,12 +16,6 @@ Syncs KOReader reading progress into the Onyx Android content provider so progre
 2. Restart KOReader.
 3. Ensure the plugin is enabled in KOReader settings.
 
-## How It Works
-The plugin uses Android JNI calls to update the Onyx content provider:
-- `content://com.onyx.content.database.ContentProvider/Metadata`
-- Updates or inserts a row keyed by `nativeAbsolutePath`.
-- Only syncs when the current page is in the main flow (skips footnotes and cover flows).
-
 ## When It Syncs
 - On page updates (debounced, ~3s).
 - When a document is closed.
@@ -31,8 +25,13 @@ The plugin uses Android JNI calls to update the Onyx content provider:
 
 ## Notes
 - Only runs on Android devices (no effect on other platforms).
+- Only tested on Boox Go 7.
 - If the Onyx provider row does not exist, the plugin inserts it.
 - Completion is detected from KOReader summary status or when the last page in the main flow is reached.
+
+## Example with ADB
+- Show all reading progress on all book
+adb shell content query --uri content://com.onyx.content.database.ContentProvider/Metadata
 
 ## License
 MIT. See [LICENSE](LICENSE).
