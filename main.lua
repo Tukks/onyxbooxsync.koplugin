@@ -4,14 +4,19 @@ local InfoMessage = require("ui/widget/infomessage")
 local Device = require("device")
 local logger = require("logger")
 local ffi = require("ffi")
+local DocSettings = require("docsettings")
+local ReadHistory = require("readhistory")
+local _ = require("gettext")
 
 local OnyxSync = WidgetContainer:extend{
-    name = "OnyxSync",
-    is_doc_only = true,
+    name = "onyx_sync",
+    is_doc_only = false,
 }
 
 function OnyxSync:init()
     logger.info("OnyxSync: Plugin initialized")
+
+    self.ui.menu:registerToMainMenu(self)
 
     local ok, android = pcall(require, "android")
     if ok then
@@ -22,12 +27,11 @@ function OnyxSync:init()
     end
 end
 
-function OnyxSync:updateOnyxProgress(path, progress, timestamp, is_completed)
+-- readingStatus (Integer): 0=NEW, 1=READING, 2=FINISHED
+function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
     if not self.android or not self.android.app or not self.android.app.activity then
         return 0, "Android module not available"
     end
-
-    is_completed = is_completed or 0
 
     local status, result = pcall(function()
         return self.android.jni:context(self.android.app.activity.vm, function(jni)
@@ -81,9 +85,7 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, is_completed)
             local key_progress = env[0].NewStringUTF(env, "progress")
             local val_progress = env[0].NewStringUTF(env, progress)
             env[0].CallVoidMethod(env, values, put_string, key_progress, val_progress)
-
-            -- readingStatus (Integer): 0=NEW, 1=READING, 2=FINISHED
-            local reading_status = (is_completed == 1) and 2 or 1
+  
             local status_val = jni:callStaticObjectMethod(
                 "java/lang/Integer",
                 "valueOf",
@@ -232,20 +234,148 @@ function OnyxSync:doSync()
     -- Check completion status
     local summary = self.ui.doc_settings:readSetting("summary")
     local status = summary and summary.status
-    local is_completed = (status == "complete" or page_in_flow == total_pages_in_flow) and 1 or 0
-
+    
+    local reading_status = 0
+    if status == "complete" or page_in_flow == total_pages_in_flow then
+        reading_status = 2
+    elseif status == "reading" then
+        reading_status = 1
+    end
     local progress = page_in_flow .. "/" .. total_pages_in_flow
     local timestamp = os.time() * 1000
 
-    logger.info("OnyxSync: Syncing", path, "-", progress, "completed:", is_completed)
+    logger.info("OnyxSync: Syncing", path, "-", progress, "status:", reading_status)
 
-    local rows = self:updateOnyxProgress(path, progress, timestamp, is_completed)
+    local rows = self:updateOnyxProgress(path, progress, timestamp, reading_status)
 
     if rows > 0 then
         logger.info("OnyxSync: SUCCESS!")
     else
         logger.warn("OnyxSync: No rows updated")
     end
+end
+
+function OnyxSync:updateAllBooks()
+    if not Device:isAndroid() then
+        UIManager:show(InfoMessage:new{
+            text = _("This feature is only available on Android devices"),
+        })
+        return
+    end
+
+    local lfs = require("libs/libkoreader-lfs")
+    local DocumentRegistry = require("document/documentregistry")
+    local FileManager = require("apps/filemanager/filemanager")
+
+    local book_files = {}
+    local start_dir = FileManager.instance and FileManager.instance.file_chooser and FileManager.instance.file_chooser.path or lfs.currentdir()
+
+    logger.info("OnyxSync: Current directory =", start_dir)
+
+    if not start_dir or lfs.attributes(start_dir, "mode") ~= "directory" then
+        UIManager:show(InfoMessage:new{
+            text = _("Could not access current directory"),
+        })
+        return
+    end
+
+    UIManager:show(InfoMessage:new{
+        text = _("Scanning for books..."),
+        timeout = 2,
+    })
+
+    -- Scan only current directory (no recursion)
+    for entry in lfs.dir(start_dir) do
+        if entry ~= "." and entry ~= ".." then
+            local full_path = start_dir .. "/" .. entry
+            local attr = lfs.attributes(full_path)
+            if attr and attr.mode == "file" then
+                local ext = entry:match("%.([^%.]+)$")
+                logger.info("OnyxSync: Found file:", entry, "ext:", ext)
+                if ext and (ext:lower() == "epub" or ext:lower() == "pdf") then
+                    table.insert(book_files, full_path)
+                    logger.info("OnyxSync: Added book:", full_path)
+                end
+            end
+        end
+    end
+
+    logger.info("OnyxSync: Total books found:", #book_files)
+
+    if #book_files == 0 then
+        UIManager:show(InfoMessage:new{
+            text = _("No books found in current directory"),
+        })
+        return
+    end
+
+    local updated_count = 0
+    local skipped_count = 0
+    local timestamp = os.time() * 1000
+
+    for _, path in ipairs(book_files) do
+        local doc_settings = DocSettings:open(path)
+        local summary = doc_settings:readSetting("summary")
+        local percent_finished = doc_settings:readSetting("percent_finished")
+
+        local reading_status = 0
+        local progress = "0/1"
+       
+        if summary then
+            if summary.status == "complete" then
+                reading_status = 2
+                progress = "1/1"
+            
+            elseif summary.status == "reading" then
+                reading_status = 1
+                if percent_finished then
+                    progress = string.format("%.0f/100", percent_finished * 100)
+                end
+            end
+        elseif percent_finished and percent_finished > 0 then
+            reading_status = 1
+            progress = string.format("%.0f/100", percent_finished * 100)
+        end
+
+        local rows = self:updateOnyxProgress(path, progress, timestamp, reading_status)
+        logger.info("OnyxSync: Bulk update completed - updated:", "path:", path, "status:", reading_status, "progress:", progress)
+        -- local rows = 0
+        if rows > 0 then
+            updated_count = updated_count + 1
+            logger.info("OnyxSync: Updated", path, "- status:", reading_status, "progress:", progress)
+        else
+            skipped_count = skipped_count + 1
+        end
+
+        doc_settings:close()
+    end
+
+    UIManager:show(InfoMessage:new{
+        text = string.format(_("Updated %d books, skipped %d"), updated_count, skipped_count),
+        timeout = 3,
+    })
+
+    logger.info("OnyxSync: Bulk update completed - updated:", updated_count, "skipped:", skipped_count)
+end
+
+function OnyxSync:addToMainMenu(menu_items)
+    -- Only show in file browser, not when a document is open
+    if self.ui.document then
+        return
+    end
+
+    menu_items.onyx_sync = {
+        text = _("Onyx Progress Sync"),
+        sub_item_table = {
+            {
+                text = _("Scan and update all books in current directory"),
+                keep_menu_open = true,
+                callback = function()
+                    self:updateAllBooks()
+                end,
+            },
+        },
+    }
 end
 
 function OnyxSync:onPageUpdate()
