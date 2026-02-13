@@ -22,10 +22,12 @@ function OnyxSync:init()
     end
 end
 
-function OnyxSync:updateOnyxProgress(path, progress, timestamp)
+function OnyxSync:updateOnyxProgress(path, progress, timestamp, is_completed)
     if not self.android or not self.android.app or not self.android.app.activity then
         return 0, "Android module not available"
     end
+
+    is_completed = is_completed or 0
 
     local status, result = pcall(function()
         return self.android.jni:context(self.android.app.activity.vm, function(jni)
@@ -80,12 +82,13 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp)
             local val_progress = env[0].NewStringUTF(env, progress)
             env[0].CallVoidMethod(env, values, put_string, key_progress, val_progress)
 
-            -- readingStatus (Integer)
+            -- readingStatus (Integer): 0=NEW, 1=READING, 2=FINISHED
+            local reading_status = (is_completed == 1) and 2 or 1
             local status_val = jni:callStaticObjectMethod(
                 "java/lang/Integer",
                 "valueOf",
                 "(I)Ljava/lang/Integer;",
-                ffi.new("int32_t", 1)
+                ffi.new("int32_t", reading_status)
             )
             local key_status = env[0].NewStringUTF(env, "readingStatus")
             env[0].CallVoidMethod(env, values, put_int, key_status, status_val)
@@ -192,7 +195,17 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp)
     return result or 0
 end
 
-function OnyxSync:syncNow()
+function OnyxSync:immediateSync()
+    UIManager:unschedule(self.doSync)
+    self:doSync()
+end
+
+function OnyxSync:scheduleSync()
+    UIManager:unschedule(self.doSync)
+    UIManager:scheduleIn(3, self.doSync, self)
+end
+
+function OnyxSync:doSync()
     if not self.ui or not self.ui.document or not self.view then
         return
     end
@@ -204,12 +217,29 @@ function OnyxSync:syncNow()
     local path = self.ui.document.file
     local curr_page = self.view.state.page or 1
     local total_pages = self.ui.document:getPageCount() or 1
-    local progress = curr_page .. "/" .. total_pages
+
+    -- Skip sync if not in main flow (e.g., footnotes, cover pages)
+    local flow = self.ui.document:getPageFlow(curr_page)
+    if flow ~= 0 then
+        logger.info("OnyxSync: Skipping sync - not in main flow")
+        return
+    end
+
+    -- Get actual page numbers within the flow
+    local total_pages_in_flow = self.ui.document:getTotalPagesInFlow(flow)
+    local page_in_flow = self.ui.document:getPageNumberInFlow(curr_page)
+
+    -- Check completion status
+    local summary = self.ui.doc_settings:readSetting("summary")
+    local status = summary and summary.status
+    local is_completed = (status == "complete" or page_in_flow == total_pages_in_flow) and 1 or 0
+
+    local progress = page_in_flow .. "/" .. total_pages_in_flow
     local timestamp = os.time() * 1000
 
-    logger.info("OnyxSync: Syncing", path, "-", progress)
+    logger.info("OnyxSync: Syncing", path, "-", progress, "completed:", is_completed)
 
-    local rows = self:updateOnyxProgress(path, progress, timestamp)
+    local rows = self:updateOnyxProgress(path, progress, timestamp, is_completed)
 
     if rows > 0 then
         logger.info("OnyxSync: SUCCESS!")
@@ -218,19 +248,28 @@ function OnyxSync:syncNow()
     end
 end
 
+function OnyxSync:onPageUpdate()
+    self:scheduleSync()
+end
+
 function OnyxSync:onCloseDocument()
     logger.info("OnyxSync: Document closing")
-    self:syncNow()
+    self:immediateSync()
 end
 
 function OnyxSync:onSaveSettings()
     logger.info("OnyxSync: Settings saving")
-    self:syncNow()
+    self:immediateSync()
 end
 
 function OnyxSync:onSuspend()
     logger.info("OnyxSync: App going to background")
-    self:syncNow()
+    self:immediateSync()
+end
+
+function OnyxSync:onEndOfBook()
+    logger.info("OnyxSync: End of book reached")
+    self:immediateSync()
 end
 
 return OnyxSync
