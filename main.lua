@@ -60,7 +60,8 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp)
             local where_clause = "nativeAbsolutePath='" .. escaped_path .. "'"
             local where_string = env[0].NewStringUTF(env, where_clause)
 
-            logger.dbg("OnyxSync: WHERE =", where_clause)
+            logger.info("OnyxSync: WHERE =", where_clause)
+            logger.info("OnyxSync: File path =", path)
 
             -- ContentValues
             local cv_class = env[0].FindClass(env, "android/content/ContentValues")
@@ -99,13 +100,40 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp)
             local key_time = env[0].NewStringUTF(env, "lastAccess")
             env[0].CallVoidMethod(env, values, put_long, key_time, time_val)
 
-            -- Try UPDATE first
-            local rows = jni:callIntMethod(
+            -- Try QUERY first to check if row exists
+            local projection = nil
+            local selection_args = nil
+            local sort_order = nil
+
+            local cursor = jni:callObjectMethod(
                 resolver,
-                "update",
-                "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I",
-                uri, values, where_string, nil
+                "query",
+                "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
+                uri, projection, where_string, selection_args, sort_order
             )
+
+            local exists = false
+            if cursor ~= nil then
+                local count = jni:callIntMethod(cursor, "getCount", "()I")
+                logger.info("OnyxSync: Query found", count, "existing row(s)")
+                exists = (count > 0)
+                jni:callVoidMethod(cursor, "close", "()V")
+                delete_local(cursor)
+            else
+                logger.warn("OnyxSync: Query returned nil cursor")
+            end
+
+            -- Try UPDATE if row exists
+            local rows = 0
+            if exists then
+                rows = jni:callIntMethod(
+                    resolver,
+                    "update",
+                    "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I",
+                    uri, values, where_string, nil
+                )
+                logger.info("OnyxSync: Update returned", rows, "rows")
+            end
 
             -- If no rows updated, INSERT new row
             if rows == 0 then
@@ -124,7 +152,13 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp)
                     uri, values
                 )
 
-                rows = (insert_uri ~= nil) and 1 or 0
+                if insert_uri ~= nil then
+                    rows = 1
+                    logger.info("OnyxSync: Insert successful, URI:", tostring(insert_uri))
+                else
+                    rows = 0
+                    logger.err("OnyxSync: Insert failed, returned nil URI")
+                end
 
                 delete_local(key_path)
                 delete_local(val_path)
@@ -179,16 +213,8 @@ function OnyxSync:syncNow()
 
     if rows > 0 then
         logger.info("OnyxSync: SUCCESS!")
-        UIManager:show(InfoMessage:new{
-            text = "Synced: " .. progress,
-            timeout = 2,
-        })
     else
         logger.warn("OnyxSync: No rows updated")
-        UIManager:show(InfoMessage:new{
-            text = "Sync failed - check logs",
-            timeout = 3,
-        })
     end
 end
 
@@ -199,6 +225,11 @@ end
 
 function OnyxSync:onSaveSettings()
     logger.info("OnyxSync: Settings saving")
+    self:syncNow()
+end
+
+function OnyxSync:onSuspend()
+    logger.info("OnyxSync: App going to background")
     self:syncNow()
 end
 
