@@ -76,28 +76,48 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
 
             local values = env[0].NewObject(env, cv_class, cv_init)
 
-            -- progress
-            local key_progress = env[0].NewStringUTF(env, "progress")
-            local val_progress = env[0].NewStringUTF(env, progress)
-            env[0].CallVoidMethod(env, values, put_string, key_progress, val_progress)
-
-            -- readingStatus
+            -- readingStatus (always set)
+            local key_status = env[0].NewStringUTF(env, "readingStatus")
             local status_val = jni:callStaticObjectMethod(
                 "java/lang/Integer", "valueOf",
                 "(I)Ljava/lang/Integer;",
                 ffi.new("int32_t", reading_status)
             )
-            local key_status = env[0].NewStringUTF(env, "readingStatus")
             env[0].CallVoidMethod(env, values, put_int, key_status, status_val)
+            delete_local(key_status)
+            delete_local(status_val)
 
-            -- lastAccess
-            local time_val = jni:callStaticObjectMethod(
-                "java/lang/Long", "valueOf",
-                "(J)Ljava/lang/Long;",
-                ffi.new("int64_t", timestamp)
-            )
-            local key_time = env[0].NewStringUTF(env, "lastAccess")
-            env[0].CallVoidMethod(env, values, put_long, key_time, time_val)
+            -- If readingStatus is 0 (NEW/unread), explicitly set progress and lastAccess to NULL
+            if reading_status == 0 then
+                local key_progress = env[0].NewStringUTF(env, "progress")
+                env[0].CallVoidMethod(env, values, put_string, key_progress, nil)
+                delete_local(key_progress)
+
+                local key_time = env[0].NewStringUTF(env, "lastAccess")
+                env[0].CallVoidMethod(env, values, put_long, key_time, nil)
+                delete_local(key_time)
+            else
+                -- Only set progress and lastAccess if book has been read
+                if progress then
+                    local key_progress = env[0].NewStringUTF(env, "progress")
+                    local val_progress = env[0].NewStringUTF(env, progress)
+                    env[0].CallVoidMethod(env, values, put_string, key_progress, val_progress)
+                    delete_local(key_progress)
+                    delete_local(val_progress)
+                end
+
+                if timestamp then
+                    local key_time = env[0].NewStringUTF(env, "lastAccess")
+                    local time_val = jni:callStaticObjectMethod(
+                        "java/lang/Long", "valueOf",
+                        "(J)Ljava/lang/Long;",
+                        ffi.new("int64_t", timestamp)
+                    )
+                    env[0].CallVoidMethod(env, values, put_long, key_time, time_val)
+                    delete_local(key_time)
+                    delete_local(time_val)
+                end
+            end
 
             -- Simple UPDATE
             local rows = jni:callIntMethod(
@@ -209,7 +229,6 @@ function OnyxSync:updateAllBooks()
     end
 
     local lfs = require("libs/libkoreader-lfs")
-    local DocumentRegistry = require("document/documentregistry")
     local FileManager = require("apps/filemanager/filemanager")
 
     local book_files = {}
