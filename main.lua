@@ -8,7 +8,7 @@ local DocSettings = require("docsettings")
 local ReadHistory = require("readhistory")
 local _ = require("gettext")
 
-local OnyxSync = WidgetContainer:extend{
+local OnyxSync = WidgetContainer:extend {
     name = "onyx_sync",
     is_doc_only = false,
 }
@@ -44,29 +44,24 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
                 end
             end
 
-            -- ContentResolver
             local resolver = jni:callObjectMethod(
-                activity,
-                "getContentResolver",
+                activity, "getContentResolver",
                 "()Landroid/content/ContentResolver;"
             )
 
-            -- Uri.parse(...)
             local uri_string = env[0].NewStringUTF(env,
                 "content://com.onyx.content.database.ContentProvider/Metadata")
             local uri = jni:callStaticObjectMethod(
-                "android/net/Uri",
-                "parse",
+                "android/net/Uri", "parse",
                 "(Ljava/lang/String;)Landroid/net/Uri;",
                 uri_string
             )
 
-            -- WHERE clause
             local escaped_path = path:gsub("'", "''")
             local where_clause = "nativeAbsolutePath='" .. escaped_path .. "'"
             local where_string = env[0].NewStringUTF(env, where_clause)
 
-            logger.info("OnyxSync: WHERE =", where_clause)
+            logger.info("OnyxSync: Updating WHERE =", where_clause)
             logger.info("OnyxSync: File path =", path)
 
             -- ContentValues
@@ -85,91 +80,41 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
             local key_progress = env[0].NewStringUTF(env, "progress")
             local val_progress = env[0].NewStringUTF(env, progress)
             env[0].CallVoidMethod(env, values, put_string, key_progress, val_progress)
-  
+
+            -- readingStatus
             local status_val = jni:callStaticObjectMethod(
-                "java/lang/Integer",
-                "valueOf",
+                "java/lang/Integer", "valueOf",
                 "(I)Ljava/lang/Integer;",
                 ffi.new("int32_t", reading_status)
             )
             local key_status = env[0].NewStringUTF(env, "readingStatus")
             env[0].CallVoidMethod(env, values, put_int, key_status, status_val)
 
-            -- lastAccess (Long)
+            -- lastAccess
             local time_val = jni:callStaticObjectMethod(
-                "java/lang/Long",
-                "valueOf",
+                "java/lang/Long", "valueOf",
                 "(J)Ljava/lang/Long;",
                 ffi.new("int64_t", timestamp)
             )
             local key_time = env[0].NewStringUTF(env, "lastAccess")
             env[0].CallVoidMethod(env, values, put_long, key_time, time_val)
 
-            -- Try QUERY first to check if row exists
-            local projection = nil
-            local selection_args = nil
-            local sort_order = nil
-
-            local cursor = jni:callObjectMethod(
-                resolver,
-                "query",
-                "(Landroid/net/Uri;[Ljava/lang/String;Ljava/lang/String;[Ljava/lang/String;Ljava/lang/String;)Landroid/database/Cursor;",
-                uri, projection, where_string, selection_args, sort_order
+            -- Simple UPDATE
+            local rows = jni:callIntMethod(
+                resolver, "update",
+                "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I",
+                uri, values, where_string, nil
             )
-
-            local exists = false
-            if cursor ~= nil then
-                local count = jni:callIntMethod(cursor, "getCount", "()I")
-                logger.info("OnyxSync: Query found", count, "existing row(s)")
-                exists = (count > 0)
-                jni:callVoidMethod(cursor, "close", "()V")
-                delete_local(cursor)
-            else
-                logger.warn("OnyxSync: Query returned nil cursor")
+            -- Log if provider signaled error / exception
+            if env[0].ExceptionCheck(env) ~= 0 then
+                logger.err("OnyxSync: Java exception during update()")
+                env[0].ExceptionDescribe(env)
+                env[0].ExceptionClear(env)
             end
 
-            -- Try UPDATE if row exists
-            local rows = 0
-            if exists then
-                rows = jni:callIntMethod(
-                    resolver,
-                    "update",
-                    "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I",
-                    uri, values, where_string, nil
-                )
-                logger.info("OnyxSync: Update returned", rows, "rows")
+            if rows == -1 then
+                logger.warn("OnyxSync: update() returned -1 (provider error)")
             end
-
-            -- If no rows updated, INSERT new row
-            if rows == 0 then
-                logger.info("OnyxSync: No existing row, inserting new metadata")
-
-                -- Add nativeAbsolutePath to ContentValues for INSERT
-                local key_path = env[0].NewStringUTF(env, "nativeAbsolutePath")
-                local val_path = env[0].NewStringUTF(env, path)
-                env[0].CallVoidMethod(env, values, put_string, key_path, val_path)
-
-                -- Insert new row
-                local insert_uri = jni:callObjectMethod(
-                    resolver,
-                    "insert",
-                    "(Landroid/net/Uri;Landroid/content/ContentValues;)Landroid/net/Uri;",
-                    uri, values
-                )
-
-                if insert_uri ~= nil then
-                    rows = 1
-                    logger.info("OnyxSync: Insert successful, URI:", tostring(insert_uri))
-                else
-                    rows = 0
-                    logger.err("OnyxSync: Insert failed, returned nil URI")
-                end
-
-                delete_local(key_path)
-                delete_local(val_path)
-                delete_local(insert_uri)
-            end
-
             -- Cleanup
             delete_local(uri_string)
             delete_local(uri)
@@ -184,7 +129,7 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
             delete_local(resolver)
             delete_local(cv_class)
 
-            logger.info("OnyxSync:", rows, "row(s) affected")
+            logger.info("OnyxSync: Update returned", rows, "row(s)")
             return rows
         end)
     end)
@@ -234,7 +179,7 @@ function OnyxSync:doSync()
     -- Check completion status
     local summary = self.ui.doc_settings:readSetting("summary")
     local status = summary and summary.status
-    
+
     local reading_status = 0
     if status == "complete" or page_in_flow == total_pages_in_flow then
         reading_status = 2
@@ -257,7 +202,7 @@ end
 
 function OnyxSync:updateAllBooks()
     if not Device:isAndroid() then
-        UIManager:show(InfoMessage:new{
+        UIManager:show(InfoMessage:new {
             text = _("This feature is only available on Android devices"),
         })
         return
@@ -268,18 +213,19 @@ function OnyxSync:updateAllBooks()
     local FileManager = require("apps/filemanager/filemanager")
 
     local book_files = {}
-    local start_dir = FileManager.instance and FileManager.instance.file_chooser and FileManager.instance.file_chooser.path or lfs.currentdir()
+    local start_dir = FileManager.instance and FileManager.instance.file_chooser and
+        FileManager.instance.file_chooser.path or lfs.currentdir()
 
     logger.info("OnyxSync: Current directory =", start_dir)
 
     if not start_dir or lfs.attributes(start_dir, "mode") ~= "directory" then
-        UIManager:show(InfoMessage:new{
+        UIManager:show(InfoMessage:new {
             text = _("Could not access current directory"),
         })
         return
     end
 
-    UIManager:show(InfoMessage:new{
+    UIManager:show(InfoMessage:new {
         text = _("Scanning for books..."),
         timeout = 2,
     })
@@ -291,10 +237,8 @@ function OnyxSync:updateAllBooks()
             local attr = lfs.attributes(full_path)
             if attr and attr.mode == "file" then
                 local ext = entry:match("%.([^%.]+)$")
-                logger.info("OnyxSync: Found file:", entry, "ext:", ext)
                 if ext and (ext:lower() == "epub" or ext:lower() == "pdf") then
                     table.insert(book_files, full_path)
-                    logger.info("OnyxSync: Added book:", full_path)
                 end
             end
         end
@@ -303,54 +247,110 @@ function OnyxSync:updateAllBooks()
     logger.info("OnyxSync: Total books found:", #book_files)
 
     if #book_files == 0 then
-        UIManager:show(InfoMessage:new{
+        UIManager:show(InfoMessage:new {
             text = _("No books found in current directory"),
         })
         return
     end
 
-    local updated_count = 0
-    local skipped_count = 0
-    local timestamp = os.time() * 1000
+    UIManager:show(InfoMessage:new {
+        text = _("Preparing book data..."),
+        timeout = 2,
+    })
 
-    for _, path in ipairs(book_files) do
-        local doc_settings = DocSettings:open(path)
-        local summary = doc_settings:readSetting("summary")
-        local percent_finished = doc_settings:readSetting("percent_finished")
-
-        local reading_status = 0
-        local progress = "0/1"
-       
-        if summary then
-            if summary.status == "complete" then
-                reading_status = 2
-                progress = "1/1"
-            
-            elseif summary.status == "reading" then
-                reading_status = 1
-                if percent_finished then
-                    progress = string.format("%.0f/100", percent_finished * 100)
-                end
+    -- Prepare all book data first
+    local book_data = {}
+    for i, path in ipairs(book_files) do
+        local prep_ok, prep_err = pcall(function()
+            local doc_settings = DocSettings:open(path)
+            if not doc_settings then
+                return
             end
-        elseif percent_finished and percent_finished > 0 then
-            reading_status = 1
-            progress = string.format("%.0f/100", percent_finished * 100)
-        end
 
-        local rows = self:updateOnyxProgress(path, progress, timestamp, reading_status)
-        logger.info("OnyxSync: Bulk update completed - updated:", "path:", path, "status:", reading_status, "progress:", progress)
-        -- local rows = 0
-        if rows > 0 then
-            updated_count = updated_count + 1
-            logger.info("OnyxSync: Updated", path, "- status:", reading_status, "progress:", progress)
-        else
-            skipped_count = skipped_count + 1
-        end
+            local summary = doc_settings:readSetting("summary")
+            local percent_finished = doc_settings:readSetting("percent_finished")
 
-        doc_settings:close()
+            -- Get actual last read timestamp from history
+            local timestamp = os.time() * 1000
+            local history_ok, history_item = pcall(ReadHistory.getFileLastRead, ReadHistory, path)
+            if history_ok and history_item and history_item.time then
+                timestamp = history_item.time * 1000
+            end
+
+            local reading_status = 0
+            local progress = "0/1"
+
+            if summary then
+                if summary.status == "complete" then
+                    reading_status = 2
+                    progress = "1/1"
+                elseif summary.status == "reading" then
+                    reading_status = 1
+                    if percent_finished then
+                        progress = string.format("%.0f/100", percent_finished * 100)
+                    end
+                end
+            elseif percent_finished and percent_finished > 0 then
+                reading_status = 1
+                progress = string.format("%.0f/100", percent_finished * 100)
+            end
+
+            table.insert(book_data, {
+                path = path,
+                progress = progress,
+                timestamp = timestamp,
+                reading_status = reading_status
+            })
+
+            doc_settings:close()
+        end)
+
+        if not prep_ok then
+            logger.err("OnyxSync: Error preparing book", i, ":", tostring(prep_err))
+        end
     end
 
-    UIManager:show(InfoMessage:new{
+    logger.info("OnyxSync: Prepared data for", #book_data, "books")
+
+    if #book_data == 0 then
+        UIManager:show(InfoMessage:new {
+            text = _("Could not prepare book data"),
+        })
+        return
+    end
+
+    UIManager:show(InfoMessage:new {
+        text = _("Updating Onyx metadata..."),
+        timeout = 2,
+    })
+
+    -- Update books sequentially with delays
+    local updated_count = 0
+    local skipped_count = 0
+
+    for i, book in ipairs(book_data) do
+        local rows = self:updateOnyxProgress(book.path, book.progress, book.timestamp, book.reading_status)
+
+        if rows > 0 then
+            updated_count = updated_count + 1
+            logger.info("OnyxSync: ✓ Updated book", i, "of", #book_data)
+        else
+            skipped_count = skipped_count + 1
+            logger.warn("OnyxSync: ✗ Failed to update book", i, "of", #book_data)
+        end
+
+        -- Small delay between updates
+        if i < #book_data then
+            ffi.C.usleep(50000) -- 50ms
+        end
+
+        -- GC every 10 books
+        if i % 10 == 0 then
+            collectgarbage("collect")
+        end
+    end
+
+    UIManager:show(InfoMessage:new {
         text = string.format(_("Updated %d books, skipped %d"), updated_count, skipped_count),
         timeout = 3,
     })
