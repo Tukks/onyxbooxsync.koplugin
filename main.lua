@@ -8,7 +8,7 @@ local DocSettings = require("docsettings")
 local ReadHistory = require("readhistory")
 local _ = require("gettext")
 
--- Table de cache globale pour les IDs JNI (évite les fuites de mémoire et lenteurs)
+-- Global cache table for JNI IDs (prevents memory leaks and slowdowns)
 local JNI_CACHE = {
     initialized = false,
     cv_class = nil,
@@ -37,17 +37,17 @@ function OnyxSync:init()
     end
 end
 
--- Initialise et garde en mémoire les méthodes Java pour gagner en performance
+-- Initialize and cache Java methods for better performance
 function OnyxSync:ensureJniCache(jni)
     if JNI_CACHE.initialized then return end
 
     local env = jni.env
-    -- On crée une GlobalRef pour la classe car les local refs expirent
+    -- Create a GlobalRef for the class because local refs expire
     local local_cv_class = env[0].FindClass(env, "android/content/ContentValues")
     JNI_CACHE.cv_class = env[0].NewGlobalRef(env, local_cv_class)
     env[0].DeleteLocalRef(env, local_cv_class)
 
-    -- Les MethodIDs sont stables, pas besoin de GlobalRef
+    -- MethodIDs are stable, no need for GlobalRef
     JNI_CACHE.cv_init = env[0].GetMethodID(env, JNI_CACHE.cv_class, "<init>", "()V")
     JNI_CACHE.put_string = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/String;)V")
     JNI_CACHE.put_int = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/Integer;)V")
@@ -130,9 +130,19 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
                     "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I", uri,
                     values, where_string, nil)
 
+                if env[0].ExceptionCheck(env) ~= 0 then
+                    logger.err("OnyxSync: Java exception during update()")
+                    env[0].ExceptionDescribe(env)
+                    env[0].ExceptionClear(env)
+                end
+            
                 -- Cleanup
-                delete_local(uri_str); delete_local(uri); delete_local(values); delete_local(where_string); delete_local(
-                resolver)
+                delete_local(uri_str);
+                delete_local(uri);
+                delete_local(values);
+                delete_local(where_string);
+                delete_local(
+                    resolver)
                 return rows
             end)
         end)
@@ -142,7 +152,7 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
             final_rows = result
         else
             logger.warn("OnyxSync: Attempt " .. attempt .. " failed. Service may be busy.")
-            if attempt <= max_retries then ffi.C.usleep(150000) end -- Attendre 150ms
+            if attempt <= max_retries then ffi.C.usleep(150000) end -- Wait 150ms
         end
     end
 
@@ -153,10 +163,9 @@ function OnyxSync:doSync()
     if not self.ui or not self.ui.document or not self.view or not Device:isAndroid() then return end
 
     local curr_page = self.view.state.page or 1
-    local total_pages = self.ui.document:getPageCount() or 1
     local flow = self.ui.document:getPageFlow(curr_page)
 
-    if flow ~= 0 then return end -- Ne pas sync les notes de bas de page
+    if flow ~= 0 then return end -- Don't sync footnotes
 
     local total_in_flow = self.ui.document:getTotalPagesInFlow(flow)
     local page_in_flow = self.ui.document:getPageNumberInFlow(curr_page)
@@ -177,7 +186,7 @@ end
 
 function OnyxSync:onPageUpdate()
     local curr_page = self.view.state.page or 1
-    -- Sync toutes les 5 pages minimum pour ne pas tuer le service Onyx
+    -- Sync at least every 5 pages to avoid overloading the Onyx service
     if math.abs(curr_page - self.last_synced_page) >= 5 then
         self:scheduleSync()
     end
@@ -193,10 +202,15 @@ function OnyxSync:immediateSync()
     self:doSync()
 end
 
--- Events de fermeture
+-- Close events
 function OnyxSync:onCloseDocument() self:immediateSync() end
 
 function OnyxSync:onSuspend() self:immediateSync() end
+
+function OnyxSync:onEndOfBook()
+    logger.info("OnyxSync: End of book reached")
+    self:immediateSync()
+end
 
 function OnyxSync:updateAllBooks()
     if not Device:isAndroid() then
