@@ -8,14 +8,24 @@ local DocSettings = require("docsettings")
 local ReadHistory = require("readhistory")
 local _ = require("gettext")
 
+-- Table de cache globale pour les IDs JNI (évite les fuites de mémoire et lenteurs)
+local JNI_CACHE = {
+    initialized = false,
+    cv_class = nil,
+    cv_init = nil,
+    put_string = nil,
+    put_int = nil,
+    put_long = nil,
+}
+
 local OnyxSync = WidgetContainer:extend {
     name = "onyx_sync",
     is_doc_only = false,
+    last_synced_page = 0,
 }
 
 function OnyxSync:init()
     logger.info("OnyxSync: Plugin initialized")
-
     self.ui.menu:registerToMainMenu(self)
 
     local ok, android = pcall(require, "android")
@@ -27,138 +37,135 @@ function OnyxSync:init()
     end
 end
 
--- readingStatus (Integer): 0=NEW, 1=READING, 2=FINISHED
+-- Initialise et garde en mémoire les méthodes Java pour gagner en performance
+function OnyxSync:ensureJniCache(jni)
+    if JNI_CACHE.initialized then return end
+
+    local env = jni.env
+    -- On crée une GlobalRef pour la classe car les local refs expirent
+    local local_cv_class = env[0].FindClass(env, "android/content/ContentValues")
+    JNI_CACHE.cv_class = env[0].NewGlobalRef(env, local_cv_class)
+    env[0].DeleteLocalRef(env, local_cv_class)
+
+    -- Les MethodIDs sont stables, pas besoin de GlobalRef
+    JNI_CACHE.cv_init = env[0].GetMethodID(env, JNI_CACHE.cv_class, "<init>", "()V")
+    JNI_CACHE.put_string = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/String;)V")
+    JNI_CACHE.put_int = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/Integer;)V")
+    JNI_CACHE.put_long = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/Long;)V")
+
+    JNI_CACHE.initialized = true
+    logger.info("OnyxSync: JNI Cache initialized")
+end
+
 function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
     if not self.android or not self.android.app or not self.android.app.activity then
         return 0, "Android module not available"
     end
 
-    local status, result = pcall(function()
-        return self.android.jni:context(self.android.app.activity.vm, function(jni)
-            local env = jni.env
-            local activity = self.android.app.activity.clazz
+    local max_retries = 2
+    local attempt = 0
+    local final_rows = 0
+    local success = false
 
-            local function delete_local(ref)
-                if ref ~= nil then
-                    env[0].DeleteLocalRef(env, ref)
-                end
-            end
+    while attempt <= max_retries and not success do
+        attempt = attempt + 1
+        local status, result = pcall(function()
+            return self.android.jni:context(self.android.app.activity.vm, function(jni)
+                self:ensureJniCache(jni)
+                local env = jni.env
+                local activity = self.android.app.activity.clazz
 
-            local resolver = jni:callObjectMethod(
-                activity, "getContentResolver",
-                "()Landroid/content/ContentResolver;"
-            )
-
-            local uri_string = env[0].NewStringUTF(env,
-                "content://com.onyx.content.database.ContentProvider/Metadata")
-            local uri = jni:callStaticObjectMethod(
-                "android/net/Uri", "parse",
-                "(Ljava/lang/String;)Landroid/net/Uri;",
-                uri_string
-            )
-
-            local escaped_path = path:gsub("'", "''")
-            local where_clause = "nativeAbsolutePath='" .. escaped_path .. "'"
-            local where_string = env[0].NewStringUTF(env, where_clause)
-
-            logger.info("OnyxSync: Updating WHERE =", where_clause)
-            logger.info("OnyxSync: File path =", path)
-
-            -- ContentValues
-            local cv_class = env[0].FindClass(env, "android/content/ContentValues")
-            local cv_init = env[0].GetMethodID(env, cv_class, "<init>", "()V")
-            local put_string = env[0].GetMethodID(env, cv_class,
-                "put", "(Ljava/lang/String;Ljava/lang/String;)V")
-            local put_int = env[0].GetMethodID(env, cv_class,
-                "put", "(Ljava/lang/String;Ljava/lang/Integer;)V")
-            local put_long = env[0].GetMethodID(env, cv_class,
-                "put", "(Ljava/lang/String;Ljava/lang/Long;)V")
-
-            local values = env[0].NewObject(env, cv_class, cv_init)
-
-            -- readingStatus (always set)
-            local key_status = env[0].NewStringUTF(env, "readingStatus")
-            local status_val = jni:callStaticObjectMethod(
-                "java/lang/Integer", "valueOf",
-                "(I)Ljava/lang/Integer;",
-                ffi.new("int32_t", reading_status)
-            )
-            env[0].CallVoidMethod(env, values, put_int, key_status, status_val)
-            delete_local(key_status)
-            delete_local(status_val)
-
-            -- If readingStatus is 0 (NEW/unread), explicitly set progress and lastAccess to NULL
-            if reading_status == 0 then
-                local key_progress = env[0].NewStringUTF(env, "progress")
-                env[0].CallVoidMethod(env, values, put_string, key_progress, nil)
-                delete_local(key_progress)
-
-                local key_time = env[0].NewStringUTF(env, "lastAccess")
-                env[0].CallVoidMethod(env, values, put_long, key_time, nil)
-                delete_local(key_time)
-            else
-                -- Only set progress and lastAccess if book has been read
-                if progress then
-                    local key_progress = env[0].NewStringUTF(env, "progress")
-                    local val_progress = env[0].NewStringUTF(env, progress)
-                    env[0].CallVoidMethod(env, values, put_string, key_progress, val_progress)
-                    delete_local(key_progress)
-                    delete_local(val_progress)
+                local function delete_local(ref)
+                    if ref ~= nil then env[0].DeleteLocalRef(env, ref) end
                 end
 
-                if timestamp then
-                    local key_time = env[0].NewStringUTF(env, "lastAccess")
-                    local time_val = jni:callStaticObjectMethod(
-                        "java/lang/Long", "valueOf",
-                        "(J)Ljava/lang/Long;",
-                        ffi.new("int64_t", timestamp)
-                    )
-                    env[0].CallVoidMethod(env, values, put_long, key_time, time_val)
-                    delete_local(key_time)
-                    delete_local(time_val)
+                -- Content Resolver & URI
+                local resolver = jni:callObjectMethod(activity, "getContentResolver", "()Landroid/content/ContentResolver;")
+                local uri_str = env[0].NewStringUTF(env, "content://com.onyx.content.database.ContentProvider/Metadata")
+                local uri = jni:callStaticObjectMethod("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", uri_str)
+
+                -- WHERE clause
+                local escaped_path = path:gsub("'", "''")
+                local where_clause = "nativeAbsolutePath='" .. escaped_path .. "'"
+                local where_string = env[0].NewStringUTF(env, where_clause)
+
+                -- ContentValues instance
+                local values = env[0].NewObject(env, JNI_CACHE.cv_class, JNI_CACHE.cv_init)
+
+                -- Status
+                local key_status = env[0].NewStringUTF(env, "readingStatus")
+                local status_val = jni:callStaticObjectMethod("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", ffi.new("int32_t", reading_status))
+                env[0].CallVoidMethod(env, values, JNI_CACHE.put_int, key_status, status_val)
+                delete_local(key_status); delete_local(status_val)
+
+                if reading_status ~= 0 then
+                    if progress then
+                        local k = env[0].NewStringUTF(env, "progress")
+                        local v = env[0].NewStringUTF(env, progress)
+                        env[0].CallVoidMethod(env, values, JNI_CACHE.put_string, k, v)
+                        delete_local(k); delete_local(v)
+                    end
+                    if timestamp then
+                        local k = env[0].NewStringUTF(env, "lastAccess")
+                        local v = jni:callStaticObjectMethod("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;", ffi.new("int64_t", timestamp))
+                        env[0].CallVoidMethod(env, values, JNI_CACHE.put_long, k, v)
+                        delete_local(k); delete_local(v)
+                    end
                 end
-            end
 
-            -- Simple UPDATE
-            local rows = jni:callIntMethod(
-                resolver, "update",
-                "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I",
-                uri, values, where_string, nil
-            )
-            -- Log if provider signaled error / exception
-            if env[0].ExceptionCheck(env) ~= 0 then
-                logger.err("OnyxSync: Java exception during update()")
-                env[0].ExceptionDescribe(env)
-                env[0].ExceptionClear(env)
-            end
+                -- Execute Update
+                local rows = jni:callIntMethod(resolver, "update", "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I", uri, values, where_string, nil)
 
-            if rows == -1 then
-                logger.warn("OnyxSync: update() returned -1 (provider error)")
-            end
-            -- Cleanup
-            delete_local(uri_string)
-            delete_local(uri)
-            delete_local(values)
-            delete_local(where_string)
-            delete_local(resolver)
-            delete_local(cv_class)
-
-            logger.info("OnyxSync: Update returned", rows, "row(s)")
-            return rows
+                -- Cleanup
+                delete_local(uri_str); delete_local(uri); delete_local(values); delete_local(where_string); delete_local(resolver)
+                return rows
+            end)
         end)
-    end)
 
-    if not status then
-        logger.err("OnyxSync: JNI error:", result)
-        return 0
+        if status and result and result ~= -1 then
+            success = true
+            final_rows = result
+        else
+            logger.warn("OnyxSync: Attempt " .. attempt .. " failed. Service may be busy.")
+            if attempt <= max_retries then ffi.C.usleep(150000) end -- Attendre 150ms
+        end
     end
 
-    return result or 0
+    return final_rows
 end
 
-function OnyxSync:immediateSync()
-    UIManager:unschedule(self.doSync)
-    self:doSync()
+function OnyxSync:doSync()
+    if not self.ui or not self.ui.document or not self.view or not Device:isAndroid() then return end
+
+    local curr_page = self.view.state.page or 1
+    local total_pages = self.ui.document:getPageCount() or 1
+    local flow = self.ui.document:getPageFlow(curr_page)
+    
+    if flow ~= 0 then return end -- Ne pas sync les notes de bas de page
+
+    local total_in_flow = self.ui.document:getTotalPagesInFlow(flow)
+    local page_in_flow = self.ui.document:getPageNumberInFlow(curr_page)
+
+    local summary = self.ui.doc_settings:readSetting("summary")
+    local status = summary and summary.status
+    local reading_status = (status == "complete" or page_in_flow == total_in_flow) and 2 or 1
+    
+    local progress = page_in_flow .. "/" .. total_in_flow
+    local timestamp = os.time() * 1000
+
+    local rows = self:updateOnyxProgress(self.ui.document.file, progress, timestamp, reading_status)
+    if rows > 0 then
+        self.last_synced_page = curr_page
+        logger.info("OnyxSync: Progress updated (" .. progress .. ")")
+    end
+end
+
+function OnyxSync:onPageUpdate()
+    local curr_page = self.view.state.page or 1
+    -- Sync toutes les 5 pages minimum pour ne pas tuer le service Onyx
+    if math.abs(curr_page - self.last_synced_page) >= 5 then
+        self:scheduleSync()
+    end
 end
 
 function OnyxSync:scheduleSync()
@@ -166,54 +173,14 @@ function OnyxSync:scheduleSync()
     UIManager:scheduleIn(3, self.doSync, self)
 end
 
-function OnyxSync:doSync()
-    if not self.ui or not self.ui.document or not self.view then
-        return
-    end
-
-    if not Device:isAndroid() then
-        return
-    end
-
-    local path = self.ui.document.file
-    local curr_page = self.view.state.page or 1
-    local total_pages = self.ui.document:getPageCount() or 1
-
-    -- Skip sync if not in main flow (e.g., footnotes, cover pages)
-    local flow = self.ui.document:getPageFlow(curr_page)
-    if flow ~= 0 then
-        logger.info("OnyxSync: Skipping sync - not in main flow")
-        return
-    end
-
-    -- Get actual page numbers within the flow
-    local total_pages_in_flow = self.ui.document:getTotalPagesInFlow(flow)
-    local page_in_flow = self.ui.document:getPageNumberInFlow(curr_page)
-
-    -- Check completion status
-    local summary = self.ui.doc_settings:readSetting("summary")
-    local status = summary and summary.status
-
-    local reading_status = 0
-    if status == "complete" or page_in_flow == total_pages_in_flow then
-        reading_status = 2
-    elseif status == "reading" then
-        reading_status = 1
-    end
-    local progress = page_in_flow .. "/" .. total_pages_in_flow
-    local timestamp = os.time() * 1000
-
-    logger.info("OnyxSync: Syncing", path, "-", progress, "status:", reading_status)
-
-    local rows = self:updateOnyxProgress(path, progress, timestamp, reading_status)
-
-    if rows > 0 then
-        logger.info("OnyxSync: SUCCESS!")
-    else
-        logger.warn("OnyxSync: No rows updated")
-    end
+function OnyxSync:immediateSync()
+    UIManager:unschedule(self.doSync)
+    self:doSync()
 end
 
+-- Events de fermeture
+function OnyxSync:onCloseDocument() self:immediateSync() end
+function OnyxSync:onSuspend() self:immediateSync() end
 function OnyxSync:updateAllBooks()
     if not Device:isAndroid() then
         UIManager:show(InfoMessage:new {
@@ -389,30 +356,6 @@ function OnyxSync:addToMainMenu(menu_items)
             },
         },
     }
-end
-
-function OnyxSync:onPageUpdate()
-    self:scheduleSync()
-end
-
-function OnyxSync:onCloseDocument()
-    logger.info("OnyxSync: Document closing")
-    self:immediateSync()
-end
-
-function OnyxSync:onSaveSettings()
-    logger.info("OnyxSync: Settings saving")
-    self:immediateSync()
-end
-
-function OnyxSync:onSuspend()
-    logger.info("OnyxSync: App going to background")
-    self:immediateSync()
-end
-
-function OnyxSync:onEndOfBook()
-    logger.info("OnyxSync: End of book reached")
-    self:immediateSync()
 end
 
 return OnyxSync
