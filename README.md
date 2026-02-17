@@ -12,7 +12,7 @@ Syncs KOReader reading progress into the Onyx Boox library so progress stays vis
 
 ## Installation
 1. Create a folder in koreader/plugins/onyx_sync.koplugin
-1. Copy all the file into the folder
+1. Copy main.lua and _meta.lua into the folder
 2. Restart KOReader.
 3. Ensure the plugin is enabled in KOReader settings.
 
