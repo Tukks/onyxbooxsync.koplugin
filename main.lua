@@ -80,9 +80,11 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
                 end
 
                 -- Content Resolver & URI
-                local resolver = jni:callObjectMethod(activity, "getContentResolver", "()Landroid/content/ContentResolver;")
+                local resolver = jni:callObjectMethod(activity, "getContentResolver",
+                    "()Landroid/content/ContentResolver;")
                 local uri_str = env[0].NewStringUTF(env, "content://com.onyx.content.database.ContentProvider/Metadata")
-                local uri = jni:callStaticObjectMethod("android/net/Uri", "parse", "(Ljava/lang/String;)Landroid/net/Uri;", uri_str)
+                local uri = jni:callStaticObjectMethod("android/net/Uri", "parse",
+                    "(Ljava/lang/String;)Landroid/net/Uri;", uri_str)
 
                 -- WHERE clause
                 local escaped_path = path:gsub("'", "''")
@@ -94,7 +96,8 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
 
                 -- Status
                 local key_status = env[0].NewStringUTF(env, "readingStatus")
-                local status_val = jni:callStaticObjectMethod("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;", ffi.new("int32_t", reading_status))
+                local status_val = jni:callStaticObjectMethod("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;",
+                    ffi.new("int32_t", reading_status))
                 env[0].CallVoidMethod(env, values, JNI_CACHE.put_int, key_status, status_val)
                 delete_local(key_status); delete_local(status_val)
 
@@ -107,17 +110,29 @@ function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
                     end
                     if timestamp then
                         local k = env[0].NewStringUTF(env, "lastAccess")
-                        local v = jni:callStaticObjectMethod("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;", ffi.new("int64_t", timestamp))
+                        local v = jni:callStaticObjectMethod("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;",
+                            ffi.new("int64_t", timestamp))
                         env[0].CallVoidMethod(env, values, JNI_CACHE.put_long, k, v)
                         delete_local(k); delete_local(v)
                     end
+                else
+                    local k1 = env[0].NewStringUTF(env, "progress")
+                    env[0].CallVoidMethod(env, values, JNI_CACHE.put_string, k1, nil)
+                    delete_local(k1)
+
+                    local k2 = env[0].NewStringUTF(env, "lastAccess")
+                    env[0].CallVoidMethod(env, values, JNI_CACHE.put_long, k2, nil)
+                    delete_local(k2)
                 end
 
                 -- Execute Update
-                local rows = jni:callIntMethod(resolver, "update", "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I", uri, values, where_string, nil)
+                local rows = jni:callIntMethod(resolver, "update",
+                    "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I", uri,
+                    values, where_string, nil)
 
                 -- Cleanup
-                delete_local(uri_str); delete_local(uri); delete_local(values); delete_local(where_string); delete_local(resolver)
+                delete_local(uri_str); delete_local(uri); delete_local(values); delete_local(where_string); delete_local(
+                resolver)
                 return rows
             end)
         end)
@@ -140,7 +155,7 @@ function OnyxSync:doSync()
     local curr_page = self.view.state.page or 1
     local total_pages = self.ui.document:getPageCount() or 1
     local flow = self.ui.document:getPageFlow(curr_page)
-    
+
     if flow ~= 0 then return end -- Ne pas sync les notes de bas de page
 
     local total_in_flow = self.ui.document:getTotalPagesInFlow(flow)
@@ -149,7 +164,7 @@ function OnyxSync:doSync()
     local summary = self.ui.doc_settings:readSetting("summary")
     local status = summary and summary.status
     local reading_status = (status == "complete" or page_in_flow == total_in_flow) and 2 or 1
-    
+
     local progress = page_in_flow .. "/" .. total_in_flow
     local timestamp = os.time() * 1000
 
@@ -180,7 +195,9 @@ end
 
 -- Events de fermeture
 function OnyxSync:onCloseDocument() self:immediateSync() end
+
 function OnyxSync:onSuspend() self:immediateSync() end
+
 function OnyxSync:updateAllBooks()
     if not Device:isAndroid() then
         UIManager:show(InfoMessage:new {
