@@ -8,7 +8,6 @@ local DocSettings = require("docsettings")
 local ReadHistory = require("readhistory")
 local _ = require("gettext")
 
--- Global cache table for JNI IDs (prevents memory leaks and slowdowns)
 local JNI_CACHE = {
     initialized = false,
     cv_class = nil,
@@ -27,136 +26,266 @@ local OnyxSync = WidgetContainer:extend {
 function OnyxSync:init()
     logger.info("OnyxSync: Plugin initialized")
     self.ui.menu:registerToMainMenu(self)
-
-    local ok, android = pcall(require, "android")
-    if ok then
-        self.android = android
-        logger.info("OnyxSync: Android module loaded")
-    else
-        logger.err("OnyxSync: Cannot load android module")
-    end
 end
 
--- Initialize and cache Java methods for better performance
-function OnyxSync:ensureJniCache(jni)
-    if JNI_CACHE.initialized then return end
+local function invalidateJniCache(jni)
+    if JNI_CACHE.cv_class ~= nil and jni then
+        local env = jni.env
+        pcall(function()
+            env[0].DeleteGlobalRef(env, JNI_CACHE.cv_class)
+        end)
+    end
+    JNI_CACHE.cv_class = nil
+    JNI_CACHE.cv_init = nil
+    JNI_CACHE.put_string = nil
+    JNI_CACHE.put_int = nil
+    JNI_CACHE.put_long = nil
+    JNI_CACHE.initialized = false
+    logger.info("OnyxSync: JNI cache invalidated")
+end
+
+local function ensureJniCache(jni)
+    if JNI_CACHE.initialized then return true end
 
     local env = jni.env
-    -- Create a GlobalRef for the class because local refs expire
+
+    if JNI_CACHE.cv_class ~= nil then
+        pcall(function()
+            env[0].DeleteGlobalRef(env, JNI_CACHE.cv_class)
+        end)
+        JNI_CACHE.cv_class = nil
+    end
+
     local local_cv_class = env[0].FindClass(env, "android/content/ContentValues")
+    if local_cv_class == nil then
+        logger.err("OnyxSync: Failed to find ContentValues class")
+        return false
+    end
+
     JNI_CACHE.cv_class = env[0].NewGlobalRef(env, local_cv_class)
     env[0].DeleteLocalRef(env, local_cv_class)
 
-    -- MethodIDs are stable, no need for GlobalRef
-    JNI_CACHE.cv_init = env[0].GetMethodID(env, JNI_CACHE.cv_class, "<init>", "()V")
-    JNI_CACHE.put_string = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/String;)V")
-    JNI_CACHE.put_int = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/Integer;)V")
-    JNI_CACHE.put_long = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/Long;)V")
+    JNI_CACHE.cv_init     = env[0].GetMethodID(env, JNI_CACHE.cv_class, "<init>", "()V")
+    JNI_CACHE.put_string  = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/String;)V")
+    JNI_CACHE.put_int     = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/Integer;)V")
+    JNI_CACHE.put_long    = env[0].GetMethodID(env, JNI_CACHE.cv_class, "put", "(Ljava/lang/String;Ljava/lang/Long;)V")
+
+    if not JNI_CACHE.cv_init or not JNI_CACHE.put_string or not JNI_CACHE.put_int or not JNI_CACHE.put_long then
+        logger.err("OnyxSync: Failed to resolve one or more JNI method IDs")
+        invalidateJniCache(jni)
+        return false
+    end
 
     JNI_CACHE.initialized = true
     logger.info("OnyxSync: JNI Cache initialized")
+    return true
 end
 
-function OnyxSync:updateOnyxProgress(path, progress, timestamp, reading_status)
-    if not self.android or not self.android.app or not self.android.app.activity then
-        return 0, "Android module not available"
+-- Build ContentValues for a book update
+local function buildContentValues(jni, progress, timestamp, reading_status)
+    local env = jni.env
+
+    local values = env[0].NewObject(env, JNI_CACHE.cv_class, JNI_CACHE.cv_init)
+
+    local key_status = env[0].NewStringUTF(env, "readingStatus")
+    local status_val = jni:callStaticObjectMethod("java/lang/Integer", "valueOf",
+        "(I)Ljava/lang/Integer;", ffi.new("int32_t", reading_status))
+    env[0].CallVoidMethod(env, values, JNI_CACHE.put_int, key_status, status_val)
+
+    if reading_status ~= 0 then
+        if progress then
+            local k = env[0].NewStringUTF(env, "progress")
+            local v = env[0].NewStringUTF(env, progress)
+            env[0].CallVoidMethod(env, values, JNI_CACHE.put_string, k, v)
+        end
+        if timestamp then
+            local k = env[0].NewStringUTF(env, "lastAccess")
+            local v = jni:callStaticObjectMethod("java/lang/Long", "valueOf",
+                "(J)Ljava/lang/Long;", ffi.new("int64_t", timestamp))
+            env[0].CallVoidMethod(env, values, JNI_CACHE.put_long, k, v)
+        end
+    else
+        local k1 = env[0].NewStringUTF(env, "progress")
+        env[0].CallVoidMethod(env, values, JNI_CACHE.put_string, k1, nil)
+        local k2 = env[0].NewStringUTF(env, "lastAccess")
+        env[0].CallVoidMethod(env, values, JNI_CACHE.put_long, k2, nil)
     end
 
-    local max_retries = 2
-    local attempt = 0
-    local final_rows = 0
-    local success = false
+    return values
+end
 
-    while attempt <= max_retries and not success do
-        attempt = attempt + 1
-        local status, result = pcall(function()
-            return self.android.jni:context(self.android.app.activity.vm, function(jni)
-                self:ensureJniCache(jni)
-                local env = jni.env
-                local activity = self.android.app.activity.clazz
+-- Acquire a fresh ContentProviderClient, perform the update, then close it.
+-- This bypasses any cached dead Binder proxy in ContentResolver.
+local function updateOneBook(jni, android, path, progress, timestamp, reading_status)
+    local env = jni.env
 
-                local function delete_local(ref)
-                    if ref ~= nil then env[0].DeleteLocalRef(env, ref) end
-                end
+    if env[0].PushLocalFrame(env, 32) ~= 0 then
+        logger.err("OnyxSync: PushLocalFrame failed")
+        return -1
+    end
 
-                -- Content Resolver & URI
-                local resolver = jni:callObjectMethod(activity, "getContentResolver",
-                    "()Landroid/content/ContentResolver;")
-                local uri_str = env[0].NewStringUTF(env, "content://com.onyx.content.database.ContentProvider/Metadata")
-                local uri = jni:callStaticObjectMethod("android/net/Uri", "parse",
-                    "(Ljava/lang/String;)Landroid/net/Uri;", uri_str)
+    local rows = -1
+    local ok, err = pcall(function()
+        local activity = android.app.activity.clazz
 
-                -- WHERE clause
-                local escaped_path = path:gsub("'", "''")
-                local where_clause = "nativeAbsolutePath='" .. escaped_path .. "'"
-                local where_string = env[0].NewStringUTF(env, where_clause)
+        -- Get Application context for stability
+        local context = jni:callObjectMethod(activity, "getApplicationContext",
+            "()Landroid/content/Context;")
+        if not context then
+            context = activity
+        end
 
-                -- ContentValues instance
-                local values = env[0].NewObject(env, JNI_CACHE.cv_class, JNI_CACHE.cv_init)
+        local resolver = jni:callObjectMethod(context, "getContentResolver",
+            "()Landroid/content/ContentResolver;")
+        if not resolver then
+            logger.err("OnyxSync: Failed to get ContentResolver")
+            return
+        end
 
-                -- Status
-                local key_status = env[0].NewStringUTF(env, "readingStatus")
-                local status_val = jni:callStaticObjectMethod("java/lang/Integer", "valueOf", "(I)Ljava/lang/Integer;",
-                    ffi.new("int32_t", reading_status))
-                env[0].CallVoidMethod(env, values, JNI_CACHE.put_int, key_status, status_val)
-                delete_local(key_status); delete_local(status_val)
+        -- Parse the provider URI
+        local uri_str = env[0].NewStringUTF(env,
+            "content://com.onyx.content.database.ContentProvider/Metadata")
+        local uri = jni:callStaticObjectMethod("android/net/Uri", "parse",
+            "(Ljava/lang/String;)Landroid/net/Uri;", uri_str)
 
-                if reading_status ~= 0 then
-                    if progress then
-                        local k = env[0].NewStringUTF(env, "progress")
-                        local v = env[0].NewStringUTF(env, progress)
-                        env[0].CallVoidMethod(env, values, JNI_CACHE.put_string, k, v)
-                        delete_local(k); delete_local(v)
-                    end
-                    if timestamp then
-                        local k = env[0].NewStringUTF(env, "lastAccess")
-                        local v = jni:callStaticObjectMethod("java/lang/Long", "valueOf", "(J)Ljava/lang/Long;",
-                            ffi.new("int64_t", timestamp))
-                        env[0].CallVoidMethod(env, values, JNI_CACHE.put_long, k, v)
-                        delete_local(k); delete_local(v)
-                    end
-                else
-                    local k1 = env[0].NewStringUTF(env, "progress")
-                    env[0].CallVoidMethod(env, values, JNI_CACHE.put_string, k1, nil)
-                    delete_local(k1)
+        -- Acquire a fresh, unstable ContentProviderClient.
+        -- "Unstable" means if the provider process dies, our process won't be killed too.
+        -- More importantly, this creates a NEW Binder connection each time.
+        local client = jni:callObjectMethod(resolver, "acquireUnstableContentProviderClient",
+            "(Landroid/net/Uri;)Landroid/content/ContentProviderClient;", uri)
 
-                    local k2 = env[0].NewStringUTF(env, "lastAccess")
-                    env[0].CallVoidMethod(env, values, JNI_CACHE.put_long, k2, nil)
-                    delete_local(k2)
-                end
+        if not client then
+            logger.err("OnyxSync: Failed to acquire ContentProviderClient — provider may be unavailable")
+            return
+        end
 
-                -- Execute Update
-                local rows = jni:callIntMethod(resolver, "update",
-                    "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I", uri,
-                    values, where_string, nil)
+        local update_ok, update_err = pcall(function()
+            local escaped_path = path:gsub("'", "''")
+            local where_string = env[0].NewStringUTF(env,
+                "nativeAbsolutePath='" .. escaped_path .. "'")
 
-                if env[0].ExceptionCheck(env) ~= 0 then
-                    logger.err("OnyxSync: Java exception during update()")
-                    env[0].ExceptionDescribe(env)
-                    env[0].ExceptionClear(env)
-                end
-            
-                -- Cleanup
-                delete_local(uri_str);
-                delete_local(uri);
-                delete_local(values);
-                delete_local(where_string);
-                delete_local(
-                    resolver)
-                return rows
-            end)
+            local values = buildContentValues(jni, progress, timestamp, reading_status)
+
+            -- ContentProviderClient.update(Uri, ContentValues, String, String[])
+            rows = jni:callIntMethod(client, "update",
+                "(Landroid/net/Uri;Landroid/content/ContentValues;Ljava/lang/String;[Ljava/lang/String;)I",
+                uri, values, where_string, nil)
+
+            if env[0].ExceptionCheck(env) ~= 0 then
+                logger.err("OnyxSync: Java exception during client.update()")
+                env[0].ExceptionDescribe(env)
+                env[0].ExceptionClear(env)
+                rows = -1
+            end
         end)
 
-        if status and result and result ~= -1 then
-            success = true
-            final_rows = result
-        else
-            logger.warn("OnyxSync: Attempt " .. attempt .. " failed. Service may be busy.")
-            if attempt <= max_retries then ffi.C.usleep(150000) end -- Wait 150ms
+        -- ALWAYS close the client to release the Binder connection
+        local close_ok, close_err = pcall(function()
+            -- API 24+: close(), older: release()
+            -- Try close() first, fall back to release()
+            local has_close = env[0].GetMethodID(env,
+                env[0].GetObjectClass(env, client), "close", "()V")
+
+            if env[0].ExceptionCheck(env) ~= 0 then
+                env[0].ExceptionClear(env)
+                has_close = nil
+            end
+
+            if has_close then
+                env[0].CallVoidMethod(env, client, has_close)
+            else
+                jni:callVoidMethod(client, "release", "()V")
+            end
+
+            if env[0].ExceptionCheck(env) ~= 0 then
+                env[0].ExceptionClear(env)
+            end
+
+            logger.dbg("OnyxSync: ContentProviderClient closed")
+        end)
+
+        if not close_ok then
+            logger.warn("OnyxSync: Error closing ContentProviderClient:", tostring(close_err))
         end
+
+        if not update_ok then
+            logger.err("OnyxSync: Update pcall error:", tostring(update_err))
+            rows = -1
+        end
+    end)
+
+    env[0].PopLocalFrame(env, nil)
+
+    if not ok then
+        logger.err("OnyxSync: updateOneBook pcall error:", tostring(err))
+        return -1
     end
 
-    return final_rows
+    return rows
+end
+
+local function updateOnyxProgress(path, progress, timestamp, reading_status)
+    local ok, android = pcall(require, "android")
+    if not ok or not android or not android.app or not android.app.activity then
+        logger.err("OnyxSync: Android module not available")
+        return 0
+    end
+
+    local status, result = pcall(function()
+        return android.jni:context(android.app.activity.vm, function(jni)
+            JNI_CACHE.initialized = false
+            if not ensureJniCache(jni) then return -1 end
+            return updateOneBook(jni, android, path, progress, timestamp, reading_status)
+        end)
+    end)
+
+    if not status then
+        logger.err("OnyxSync: JNI context error:", tostring(result))
+        JNI_CACHE.initialized = false
+        return -1
+    end
+
+    return result or 0
+end
+
+local function updateOnyxProgressBatch(book_data)
+    local ok, android = pcall(require, "android")
+    if not ok or not android or not android.app or not android.app.activity then
+        logger.err("OnyxSync: Android module not available")
+        return 0, 0
+    end
+
+    local updated_count = 0
+    local skipped_count = 0
+
+    local status, err = pcall(function()
+        android.jni:context(android.app.activity.vm, function(jni)
+            if not ensureJniCache(jni) then
+                logger.err("OnyxSync: JNI cache initialization failed")
+                return
+            end
+
+            for i, book in ipairs(book_data) do
+                local rows = updateOneBook(jni, android,
+                    book.path, book.progress, book.timestamp, book.reading_status)
+
+                if rows > 0 then
+                    updated_count = updated_count + 1
+                    logger.info("OnyxSync: ✓ Updated book", i, "of", #book_data)
+                else
+                    skipped_count = skipped_count + 1
+                    logger.warn("OnyxSync: ✗ Failed book", i, "of", #book_data, "rows =", rows)
+                end
+            end
+        end)
+    end)
+
+    if not status then
+        logger.err("OnyxSync: Batch JNI error:", tostring(err))
+        JNI_CACHE.initialized = false
+    end
+
+    return updated_count, skipped_count
 end
 
 function OnyxSync:doSync()
@@ -164,8 +293,7 @@ function OnyxSync:doSync()
 
     local curr_page = self.view.state.page or 1
     local flow = self.ui.document:getPageFlow(curr_page)
-
-    if flow ~= 0 then return end -- Don't sync footnotes
+    if flow ~= 0 then return end
 
     local total_in_flow = self.ui.document:getTotalPagesInFlow(flow)
     local page_in_flow = self.ui.document:getPageNumberInFlow(curr_page)
@@ -177,16 +305,19 @@ function OnyxSync:doSync()
     local progress = page_in_flow .. "/" .. total_in_flow
     local timestamp = os.time() * 1000
 
-    local rows = self:updateOnyxProgress(self.ui.document.file, progress, timestamp, reading_status)
+    local rows = updateOnyxProgress(self.ui.document.file, progress, timestamp, reading_status)
     if rows > 0 then
         self.last_synced_page = curr_page
         logger.info("OnyxSync: Progress updated (" .. progress .. ")")
+    elseif rows == 0 then
+        logger.warn("OnyxSync: No rows updated (book not in Onyx database?)")
+    else
+        logger.err("OnyxSync: Update failed")
     end
 end
 
 function OnyxSync:onPageUpdate()
     local curr_page = self.view.state.page or 1
-    -- Sync at least every 5 pages to avoid overloading the Onyx service
     if math.abs(curr_page - self.last_synced_page) >= 5 then
         self:scheduleSync()
     end
@@ -202,17 +333,29 @@ function OnyxSync:immediateSync()
     self:doSync()
 end
 
--- Close events
-function OnyxSync:onCloseDocument() self:immediateSync() end
+function OnyxSync:onCloseDocument()
+    self:immediateSync()
+    JNI_CACHE.initialized = false
+    logger.info("OnyxSync: Cache invalidated on document close")
+end
 
-function OnyxSync:onSuspend() self:immediateSync() end
+function OnyxSync:onSuspend()
+    logger.info("OnyxSync: Suspending - invalidating JNI cache")
+    JNI_CACHE.initialized = false
+    self:immediateSync()
+end
+
+function OnyxSync:onResume()
+    logger.info("OnyxSync: Resuming - JNI cache will be rebuilt on next sync")
+    JNI_CACHE.initialized = false
+end
 
 function OnyxSync:onEndOfBook()
     logger.info("OnyxSync: End of book reached")
     self:immediateSync()
 end
 
-function OnyxSync:updateAllBooks()
+local function updateAllBooks()
     if not Device:isAndroid() then
         UIManager:show(InfoMessage:new {
             text = _("This feature is only available on Android devices"),
@@ -223,25 +366,19 @@ function OnyxSync:updateAllBooks()
     local lfs = require("libs/libkoreader-lfs")
     local FileManager = require("apps/filemanager/filemanager")
 
-    local book_files = {}
     local start_dir = FileManager.instance and FileManager.instance.file_chooser and
         FileManager.instance.file_chooser.path or lfs.currentdir()
 
-    logger.info("OnyxSync: Current directory =", start_dir)
+    logger.info("OnyxSync: Scanning directory =", start_dir)
 
     if not start_dir or lfs.attributes(start_dir, "mode") ~= "directory" then
-        UIManager:show(InfoMessage:new {
-            text = _("Could not access current directory"),
-        })
+        UIManager:show(InfoMessage:new { text = _("Could not access current directory") })
         return
     end
 
-    UIManager:show(InfoMessage:new {
-        text = _("Scanning for books..."),
-        timeout = 2,
-    })
+    UIManager:show(InfoMessage:new { text = _("Scanning for books..."), timeout = 2 })
 
-    -- Scan only current directory (no recursion)
+    local book_files = {}
     for entry in lfs.dir(start_dir) do
         if entry ~= "." and entry ~= ".." then
             local full_path = start_dir .. "/" .. entry
@@ -258,30 +395,21 @@ function OnyxSync:updateAllBooks()
     logger.info("OnyxSync: Total books found:", #book_files)
 
     if #book_files == 0 then
-        UIManager:show(InfoMessage:new {
-            text = _("No books found in current directory"),
-        })
+        UIManager:show(InfoMessage:new { text = _("No books found in current directory") })
         return
     end
 
-    UIManager:show(InfoMessage:new {
-        text = _("Preparing book data..."),
-        timeout = 2,
-    })
+    UIManager:show(InfoMessage:new { text = _("Preparing book data..."), timeout = 2 })
 
-    -- Prepare all book data first
     local book_data = {}
     for i, path in ipairs(book_files) do
         local prep_ok, prep_err = pcall(function()
             local doc_settings = DocSettings:open(path)
-            if not doc_settings then
-                return
-            end
+            if not doc_settings then return end
 
             local summary = doc_settings:readSetting("summary")
             local percent_finished = doc_settings:readSetting("percent_finished")
 
-            -- Get actual last read timestamp from history
             local timestamp = os.time() * 1000
             local history_ok, history_item = pcall(ReadHistory.getFileLastRead, ReadHistory, path)
             if history_ok and history_item and history_item.time then
@@ -310,7 +438,7 @@ function OnyxSync:updateAllBooks()
                 path = path,
                 progress = progress,
                 timestamp = timestamp,
-                reading_status = reading_status
+                reading_status = reading_status,
             })
 
             doc_settings:close()
@@ -324,42 +452,16 @@ function OnyxSync:updateAllBooks()
     logger.info("OnyxSync: Prepared data for", #book_data, "books")
 
     if #book_data == 0 then
-        UIManager:show(InfoMessage:new {
-            text = _("Could not prepare book data"),
-        })
+        UIManager:show(InfoMessage:new { text = _("Could not prepare book data") })
         return
     end
 
-    UIManager:show(InfoMessage:new {
-        text = _("Updating Onyx metadata..."),
-        timeout = 2,
-    })
+    JNI_CACHE.initialized = false
+    logger.info("OnyxSync: Invalidated cache before batch update")
 
-    -- Update books sequentially with delays
-    local updated_count = 0
-    local skipped_count = 0
+    UIManager:show(InfoMessage:new { text = _("Updating Onyx metadata..."), timeout = 2 })
 
-    for i, book in ipairs(book_data) do
-        local rows = self:updateOnyxProgress(book.path, book.progress, book.timestamp, book.reading_status)
-
-        if rows > 0 then
-            updated_count = updated_count + 1
-            logger.info("OnyxSync: ✓ Updated book", i, "of", #book_data)
-        else
-            skipped_count = skipped_count + 1
-            logger.warn("OnyxSync: ✗ Failed to update book", i, "of", #book_data)
-        end
-
-        -- Small delay between updates
-        if i < #book_data then
-            ffi.C.usleep(50000) -- 50ms
-        end
-
-        -- GC every 10 books
-        if i % 10 == 0 then
-            collectgarbage("collect")
-        end
-    end
+    local updated_count, skipped_count = updateOnyxProgressBatch(book_data)
 
     UIManager:show(InfoMessage:new {
         text = string.format(_("Updated %d books, skipped %d"), updated_count, skipped_count),
@@ -370,10 +472,7 @@ function OnyxSync:updateAllBooks()
 end
 
 function OnyxSync:addToMainMenu(menu_items)
-    -- Only show in file browser, not when a document is open
-    if self.ui.document then
-        return
-    end
+    if self.ui.document then return end
 
     menu_items.onyx_sync = {
         text = _("Onyx Progress Sync"),
@@ -382,7 +481,7 @@ function OnyxSync:addToMainMenu(menu_items)
                 text = _("Scan and update all books in current directory"),
                 keep_menu_open = true,
                 callback = function()
-                    self:updateAllBooks()
+                    updateAllBooks()
                 end,
             },
         },
