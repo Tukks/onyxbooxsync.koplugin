@@ -2,6 +2,8 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
+    <permission android:name="org.koreader.backgroundonyxsynckoreader.permission.RECEIVE_SYNC_BROADCASTS" />
+
     <queries>
         <package android:name="com.onyx.kreader" />
     </queries>
@@ -9,7 +11,13 @@
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <!-- Inside <manifest> -->
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
+        tools:ignore="ScopedStorage" />
 
+    <!-- Below API 30 fallback -->
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
     <application
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
@@ -23,8 +31,7 @@
         <!-- Main activity to ensure app can start -->
         <activity
             android:name=".activity.MainActivity"
-            android:exported="true"
-            android:theme="@android:style/Theme.NoDisplay">
+            android:exported="true">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -38,6 +45,15 @@
             <intent-filter android:priority="1000">
                 <action android:name="org.koreader.onyx.SYNC_PROGRESS" />
                 <action android:name="org.koreader.onyx.BULK_SYNC" />
+            </intent-filter>
+        </receiver>
+
+        <receiver
+            android:name=".helper.PageTurnReceiver"
+            android:enabled="true"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="org.koreader.onyx.PAGE_TURN" />
             </intent-filter>
         </receiver>
 

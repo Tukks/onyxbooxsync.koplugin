@@ -8,7 +8,8 @@ local DocSettings = require("docsettings")
 local ReadHistory = require("readhistory")
 local _ = require("gettext")
 local ConfirmBox = require("ui/widget/confirmbox")
-local MIN_VERSION_CODE = 1  -- minimum required versionCode
+local util = require("util")
+local MIN_VERSION_CODE = 2 -- minimum required versionCode
 local JNI_CACHE = {
     initialized = false,
     cv_class = nil,
@@ -75,7 +76,7 @@ function OnyxSync:init()
     if Device:isAndroid() then
         local vc = getCompanionVersionCode()
         if vc == nil then
-            UIManager:show(ConfirmBox:new{
+            UIManager:show(ConfirmBox:new {
                 text = _("OnyxSync companion app is not installed.\nWould you like to download it?"),
                 ok_text = _("Download"),
                 cancel_text = _("Dismiss"),
@@ -85,7 +86,7 @@ function OnyxSync:init()
             })
             return
         elseif vc < MIN_VERSION_CODE then
-            UIManager:show(ConfirmBox:new{
+            UIManager:show(ConfirmBox:new {
                 text = _("OnyxSync companion app is outdated (v" .. vc .. ").\nPlease update to at least v" .. MIN_VERSION_CODE .. "."),
                 ok_text = _("Download update"),
                 cancel_text = _("Dismiss"),
@@ -331,8 +332,6 @@ local function updateOnyxProgressBatch(book_data)
         return 0, 0
     end
 
-    local updated_count = 0
-    local skipped_count = 0
 
     local status, err = pcall(function()
         android.jni:context(android.app.activity.vm, function(jni)
@@ -343,7 +342,7 @@ local function updateOnyxProgressBatch(book_data)
 
             sendBulkSyncIntent(jni, android, book_data)
             -- for i, book in ipairs(book_data) do
-               -- updateOnyxProgress(book.path, book.progress, book.timestamp, book.reading_status)
+            -- updateOnyxProgress(book.path, book.progress, book.timestamp, book.reading_status)
             -- end
         end)
     end)
@@ -352,9 +351,8 @@ local function updateOnyxProgressBatch(book_data)
         logger.err("OnyxSync: Batch JNI error:", tostring(err))
         JNI_CACHE.initialized = false
     end
-
-    return updated_count, skipped_count
 end
+
 function OnyxSync:doSync()
     if not self.ui or not self.ui.document or not self.view or not Device:isAndroid() then return end
 
@@ -375,7 +373,66 @@ function OnyxSync:doSync()
     updateOnyxProgress(self.ui.document.file, progress, timestamp, reading_status)
 end
 
+local function sendPageTurnIntent(jni, android, path, md5, title)
+    local env = jni.env
+
+    if env[0].PushLocalFrame(env, 20) ~= 0 then
+        return false
+    end
+
+    local ok = pcall(function()
+        local activity = android.app.activity.clazz
+
+        local intent_class = env[0].FindClass(env, "android/content/Intent")
+        local intent_init = env[0].GetMethodID(env, intent_class, "<init>", "(Ljava/lang/String;)V")
+
+        local action_str = env[0].NewStringUTF(env, "org.koreader.onyx.PAGE_TURN")
+        local intent = env[0].NewObject(env, intent_class, intent_init, action_str)
+
+        local set_package = env[0].GetMethodID(env, intent_class, "setPackage",
+            "(Ljava/lang/String;)Landroid/content/Intent;")
+
+        local package_str = env[0].NewStringUTF(env, "org.koreader.backgroundonyxsynckoreader")
+        env[0].CallObjectMethod(env, intent, set_package, package_str)
+
+        local put_extra_string = env[0].GetMethodID(env, intent_class, "putExtra",
+            "(Ljava/lang/String;Ljava/lang/String;)Landroid/content/Intent;")
+
+        -- Extras attendus par ton onReceive Java
+        env[0].CallObjectMethod(env, intent, put_extra_string,
+            env[0].NewStringUTF(env, "book_path"),
+            env[0].NewStringUTF(env, path))
+
+        env[0].CallObjectMethod(env, intent, put_extra_string,
+            env[0].NewStringUTF(env, "md5"),
+            env[0].NewStringUTF(env, md5))
+
+        env[0].CallObjectMethod(env, intent, put_extra_string,
+            env[0].NewStringUTF(env, "title"),
+            env[0].NewStringUTF(env, title or ""))
+
+        local activity_class = env[0].GetObjectClass(env, activity)
+        local send_broadcast = env[0].GetMethodID(env, activity_class,
+            "sendBroadcast", "(Landroid/content/Intent;)V")
+
+        env[0].CallVoidMethod(env, activity, send_broadcast, intent)
+    end)
+
+    env[0].PopLocalFrame(env, nil)
+    return ok
+end
 function OnyxSync:onPageUpdate()
+    local path = self.ui.document.file
+    local md5 = util.partialMD5(self.ui.document.file)
+    local title = path
+
+    local ok, android = pcall(require, "android")
+    if ok and android then
+        android.jni:context(android.app.activity.vm, function(jni)
+            sendPageTurnIntent(jni, android, path, md5, title)
+        end)
+    end
+
     local curr_page = self.view.state.page or 1
     if math.abs(curr_page - self.last_synced_page) >= 5 then
         self:scheduleSync()
@@ -520,14 +577,14 @@ local function updateAllBooks()
 
     UIManager:show(InfoMessage:new { text = _("Updating Onyx metadata..."), timeout = 2 })
 
-    local updated_count, skipped_count = updateOnyxProgressBatch(book_data)
+    updateOnyxProgressBatch(book_data)
 
     UIManager:show(InfoMessage:new {
-        text = string.format(_("Updated %d books, skipped %d"), updated_count, skipped_count),
+        text = string.format(_("Updated all books")),
         timeout = 3,
     })
 
-    logger.info("OnyxSync: Bulk update completed - updated:", updated_count, "skipped:", skipped_count)
+    logger.info("OnyxSync: Bulk update completed")
 end
 
 function OnyxSync:addToMainMenu(menu_items)

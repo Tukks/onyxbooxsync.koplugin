@@ -1,41 +1,41 @@
-package org.koreader.backgroundonyxsynckoreader.helper;
+package org.koreader.backgroundonyxsynckoreader.contentprovider;
 
-import android.app.Application;
 import android.content.ContentProviderClient;
 import android.content.ContentProviderOperation;
-import android.content.ContentProviderResult;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
+import android.content.res.Resources;
 import android.database.Cursor;
 import android.net.Uri;
 import android.util.Log;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 
-public class OnyxContentProvider {
+public class OnyxMetatadaContentProvider {
 
     private static final String TAG = "OnyxContentProvider";
     private static final Uri METADATA_URI = Uri.parse(
             "content://com.onyx.content.database.ContentProvider/Metadata"
     );
 
-    private static OnyxContentProvider instance;
+    private static OnyxMetatadaContentProvider instance;
 
     private final ContentResolver resolver;
 
-    private OnyxContentProvider(Context context) {
+    private OnyxMetatadaContentProvider(Context context) {
         this.resolver = context.getApplicationContext().getContentResolver();
     }
 
     public static void init(Context context) {
         if (instance == null) {
-            instance = new OnyxContentProvider(context);
+            instance = new OnyxMetatadaContentProvider(context);
         }
     }
 
-    public static OnyxContentProvider getInstance() {
+    public static OnyxMetatadaContentProvider getInstance() {
         if (instance == null) throw new IllegalStateException("Call init() first");
         return instance;
     }
@@ -57,7 +57,7 @@ public class OnyxContentProvider {
         }
     }
 
-    public int batchSync(List<BookData> books) {
+    public int batchSync(List<BookDataInsertRequest> books) {
         int updated = 0;
         try (ContentProviderClient client = resolver.acquireUnstableContentProviderClient(METADATA_URI)) {
             if (client == null) {
@@ -65,7 +65,7 @@ public class OnyxContentProvider {
                 return 0;
             }
             var operation = new ArrayList<ContentProviderOperation>();
-            for (BookData book : books) {
+            for (BookDataInsertRequest book : books) {
                 operation.add(ContentProviderOperation
                         .newUpdate(METADATA_URI)
                         .withValues(book.toContentValues())
@@ -116,7 +116,7 @@ public class OnyxContentProvider {
             }
             cursor = client.query(
                     METADATA_URI,
-                    new String[]{"id", "name", "nativeAbsolutePath"},
+                    new String[]{"id", "name", "nativeAbsolutePath", "hashTag", "uuid"},
                     null, null, null
             );
             if (cursor == null) {
@@ -128,7 +128,9 @@ public class OnyxContentProvider {
                 String id = cursor.getString(0);
                 String name = cursor.getString(1);
                 String p = cursor.getString(2);
-                Log.i(TAG, "  [" + id + "] " + name + " -> " + p);
+                String md5 = cursor.getString(3);
+                String uuid = cursor.getString(4);
+                Log.i(TAG, "  [" + id + "] " + name + " -> " + p + "md5=" + md5 + " uuid=" + uuid);
             }
         } catch (Exception e) {
             Log.w(TAG, "logAllBooks error: " + e.getMessage());
@@ -141,7 +143,33 @@ public class OnyxContentProvider {
         }
     }
 
-    public static class BookData {
+    public Optional<BookDataQueryResult> getBookDataQueryResult(String path) {
+        Cursor cursor = null;
+        try {
+
+            cursor = this.resolver.query(
+                    METADATA_URI,
+                    new String[]{"hashTag", "uuid", "nativeAbsolutePath", "progress", "readingStatus"},
+                    "nativeAbsolutePath = ?", new String[]{path}, null
+            );
+
+            if (cursor == null) {
+                throw new Resources.NotFoundException();
+            }
+
+            Log.i(TAG, "getBookDataQueryResult: " + cursor.getCount() + " row(s) found");
+            cursor.moveToFirst();
+            return Optional.of(new BookDataQueryResult(cursor.getString(0),
+                    cursor.getString(1), cursor.getString(2),
+                    cursor.getString(3), cursor.getInt(4)));
+
+        } catch (Exception e) {
+            Log.w(TAG, "logAllBooks error: " + e.getMessage());
+        }
+        return Optional.empty();
+    }
+
+    public static class BookDataInsertRequest {
         public String path;
         public String progress;
         public long timestamp;
@@ -158,6 +186,23 @@ public class OnyxContentProvider {
                 values.putNull("lastAccess");
             }
             return values;
+        }
+    }
+
+
+    public static class BookDataQueryResult {
+        public String hashTag;
+        public String uuid;
+        public String path;
+        public String progress;
+        public int readingStatus;
+
+        public BookDataQueryResult(String hashTag, String uuid, String path, String progress, int readingStatus) {
+            this.hashTag = hashTag;
+            this.uuid = uuid;
+            this.path = path;
+            this.progress = progress;
+            this.readingStatus = readingStatus;
         }
     }
 }
