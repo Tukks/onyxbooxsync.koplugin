@@ -1,17 +1,23 @@
 package org.koreader.backgroundonyxsynckoreader.helper;
 
+import static org.koreader.backgroundonyxsynckoreader.helper.PageTurnReceiver.sDbPath;
+
 import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.os.PowerManager;
 import android.text.TextUtils;
 import android.util.Log;
+
 import org.json.JSONArray;
 import org.json.JSONException;
 import org.json.JSONObject;
+
 import java.util.ArrayList;
 import java.util.List;
+
 import org.koreader.backgroundonyxsynckoreader.contentprovider.OnyxMetatadaContentProvider;
+import org.koreader.backgroundonyxsynckoreader.contentprovider.OnyxStatisticsContentProvider;
 
 public class SyncReceiver extends BroadcastReceiver {
     private static final String TAG = "SyncReceiver";
@@ -79,7 +85,7 @@ public class SyncReceiver extends BroadcastReceiver {
         if (ACTION_SINGLE.equals(action)) {
             handleSingleSync(intent);
         } else if (ACTION_BULK.equals(action)) {
-            handleBulkSync(intent);
+            handleBulkSync(applicationContext, intent);
         } else {
             Log.w(TAG, "Unknown action: " + action);
         }
@@ -115,7 +121,7 @@ public class SyncReceiver extends BroadcastReceiver {
         }
     }
 
-    private static void handleBulkSync(Intent intent) {
+    private static void handleBulkSync(Context applicationContext, Intent intent) {
         Log.i(TAG, "=== handleBulkSync ===");
 
         String jsonStr = intent.getStringExtra(EXTRA_BOOKS_JSON);
@@ -138,7 +144,8 @@ public class SyncReceiver extends BroadcastReceiver {
                 book.progress = obj.optString("progress");
                 book.timestamp = obj.optLong("timestamp", System.currentTimeMillis());
                 book.readingStatus = obj.optInt("readingStatus", 1);
-
+                book.md5 = obj.optString("md5");
+                book.title = obj.optString("title");
                 if (!TextUtils.isEmpty(book.path)) {
                     books.add(book);
                     Log.i(TAG, "Updated book: " + book.path + " (" + book.progress + ")");
@@ -151,8 +158,10 @@ public class SyncReceiver extends BroadcastReceiver {
 
         try {
             int updated = OnyxMetatadaContentProvider.getInstance().batchSync(books);
+            books.forEach(book -> OnyxStatisticsContentProvider.syncBookHistory(applicationContext, sDbPath, book.md5, book.title, book.path));
             Log.i(TAG, "Bulk sync updated " + updated + " of " + books.size() + " books");
-        } catch (Exception e) {
+        } catch (
+                Exception e) {
             Log.e(TAG, "Error in bulk sync", e);
         }
     }

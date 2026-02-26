@@ -14,9 +14,8 @@ public class PageTurnReceiver extends BroadcastReceiver {
 
     /**
      * Path to KOReader's shared statistics SQLite database.
-     * Set once at app startup via {@link #setDbPath(String)}.
      */
-    private static final String sDbPath = "/storage/emulated/0/koreader/settings/statistics.sqlite3";
+    public static final String sDbPath = "/storage/emulated/0/koreader/settings/statistics.sqlite3";
 
 
     // -------------------------------------------------------------------------

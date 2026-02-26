@@ -262,11 +262,13 @@ local function sendBulkSyncIntent(jni, android, book_data)
         for i, book in ipairs(book_data) do
             if i > 1 then json_data = json_data .. "," end
             json_data = json_data .. string.format(
-                '{"path":"%s","progress":"%s","timestamp":%d,"readingStatus":%d}',
+                '{"path":"%s","progress":"%s","timestamp":%d,"readingStatus":%d,"md5":"%s","title":"%s"}',
                 book.path:gsub('"', '\\"'):gsub("\\", "\\\\"), -- Escape quotes and backslashes
                 book.progress,
                 book.timestamp,
-                book.reading_status
+                book.reading_status,
+                book.md5,
+                book.title
             )
         end
         json_data = json_data .. "]"
@@ -555,6 +557,8 @@ local function updateAllBooks()
                 progress = progress,
                 timestamp = timestamp,
                 reading_status = reading_status,
+                md5 = util.partialMD5(path),
+                title = path
             })
 
             doc_settings:close()

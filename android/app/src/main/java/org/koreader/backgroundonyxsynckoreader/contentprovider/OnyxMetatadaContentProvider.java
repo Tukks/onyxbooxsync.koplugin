@@ -72,8 +72,7 @@ public class OnyxMetatadaContentProvider {
                         .withSelection("nativeAbsolutePath = ?", new String[]{book.path}).build());
 
             }
-            client.applyBatch(
-                    operation);
+            client.applyBatch(operation);
 
         } catch (Exception e) {
             Log.e(TAG, "batchSync error", e);
@@ -174,6 +173,8 @@ public class OnyxMetatadaContentProvider {
         public String progress;
         public long timestamp;
         public int readingStatus;
+        public String md5;
+        public String title;
 
         public ContentValues toContentValues() {
             ContentValues values = new ContentValues();
