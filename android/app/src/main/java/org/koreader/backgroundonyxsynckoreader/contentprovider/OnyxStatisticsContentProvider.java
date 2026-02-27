@@ -17,12 +17,12 @@ import java.util.UUID;
 
 /**
  * Inserts reading statistics into the Onyx ContentProvider.
- *
+ * <p>
  * URI: content://com.onyx.kreader.statistics.provider/OnyxStatisticsModel
- *
+ * <p>
  * To query the account info manually:
- *   adb shell content query \
- *     --uri content://com.onyx.account.database.ContentProvider.KSyncAccountContentProvider/OnyxAccountModel
+ * adb shell content query \
+ * --uri content://com.onyx.account.database.ContentProvider.KSyncAccountContentProvider/OnyxAccountModel
  */
 public class OnyxStatisticsContentProvider {
 
@@ -35,42 +35,47 @@ public class OnyxStatisticsContentProvider {
     public static final Uri CONTENT_URI =
             Uri.parse("content://com.onyx.kreader.statistics.provider/OnyxStatisticsModel");
 
-    /** Reading sessions longer than this are capped (10 minutes, mirrors MAX_PAGE_DURATION_TIME). */
+    /**
+     * Reading sessions longer than this are capped (10 minutes, mirrors MAX_PAGE_DURATION_TIME).
+     */
     public static final long MAX_PAGE_DURATION_MS = 600_000L;
 
     // Stat types (reverse-engineered from StatisticsUtils)
-    public static final int TYPE_READ_TIME  = 1;
+    public static final int TYPE_READ_TIME = 1;
     public static final int TYPE_ANNOTATION = 2;
-    public static final int TYPE_FINISH     = 6;
+    public static final int TYPE_FINISH = 6;
+
+    public static final int TYPE_OPENED = 0;
+
 
     // Sync status
-    public static final int STATUS_LOCAL  = 0; // not yet pushed to server
+    public static final int STATUS_LOCAL = 0; // not yet pushed to server
     public static final int STATUS_PUSHED = 1; // synced
 
     // -------------------------------------------------------------------------
     // Column names
     // -------------------------------------------------------------------------
 
-    private static final String COL_ACCOUNT_ID       = "accountId";
-    private static final String COL_DOC_ID           = "docId";
-    private static final String COL_MD5              = "md5";
-    private static final String COL_NAME             = "name";
-    private static final String COL_TITLE            = "title";
-    private static final String COL_PATH             = "path";
-    private static final String COL_TYPE             = "type";
-    private static final String COL_STATUS           = "status";
-    private static final String COL_EVENT_TIME       = "eventTime";
-    private static final String COL_DURATION_TIME    = "durationTime";
-    private static final String COL_CURR_PAGE        = "currPage";
-    private static final String COL_LAST_PAGE        = "lastPage";
+    private static final String COL_ACCOUNT_ID = "accountId";
+    private static final String COL_DOC_ID = "docId";
+    private static final String COL_MD5 = "md5";
+    private static final String COL_NAME = "name";
+    private static final String COL_TITLE = "title";
+    private static final String COL_PATH = "path";
+    private static final String COL_TYPE = "type";
+    private static final String COL_STATUS = "status";
+    private static final String COL_EVENT_TIME = "eventTime";
+    private static final String COL_DURATION_TIME = "durationTime";
+    private static final String COL_CURR_PAGE = "currPage";
+    private static final String COL_LAST_PAGE = "lastPage";
     private static final String COL_READING_PROGRESS = "readingProgress";
-    private static final String COL_POSITION         = "position";
-    private static final String COL_CHAPTER          = "chapter";
-    private static final String COL_ORG_TEXT         = "orgText";
-    private static final String COL_NOTE             = "note";
-    private static final String COL_COMMENT          = "comment";
-    private static final String COL_SCORE            = "score";
-    private static final String COL_HIDE_RECORD      = "hideRecord";
+    private static final String COL_POSITION = "position";
+    private static final String COL_CHAPTER = "chapter";
+    private static final String COL_ORG_TEXT = "orgText";
+    private static final String COL_NOTE = "note";
+    private static final String COL_COMMENT = "comment";
+    private static final String COL_SCORE = "score";
+    private static final String COL_HIDE_RECORD = "hideRecord";
 
     // -------------------------------------------------------------------------
     // StatEntry data class
@@ -78,36 +83,36 @@ public class OnyxStatisticsContentProvider {
 
     public static final class StatEntry {
         // Book identity
-        public String  docId;
-        public String  md5;
-        public String  title;
-        public String  name;
-        public String  path;
+        public String docId;
+        public String md5;
+        public String title;
+        public String name;
+        public String path;
 
         // Session identity
-        public String  accountId;
-        public String  sid;
-        public String  action;
+        public String accountId;
+        public String sid;
+        public String action;
 
         // Event metadata
-        public int     type;
-        public int     status    = STATUS_LOCAL;
-        public long    eventTime; // epoch ms
+        public int type;
+        public int status = STATUS_LOCAL;
+        public long eventTime; // epoch ms
 
         // Reading progress
-        public long    durationTime;
+        public long durationTime;
         public Integer currPage;
         public Integer lastPage;
-        public float   readingProgress;
+        public float readingProgress;
 
         // Position
-        public String  position;
-        public String  chapter;
+        public String position;
+        public String chapter;
 
         // Annotation fields
-        public String  orgText;
-        public String  note;
-        public String  comment;
+        public String orgText;
+        public String note;
+        public String comment;
         public Integer score;
 
         public boolean hideRecord = false;
@@ -117,77 +122,17 @@ public class OnyxStatisticsContentProvider {
     // Public API
     // -------------------------------------------------------------------------
 
-    /**
-     * Records a single page-turn reading session.
-     *
-     * @param startTimeSec KOReader's start_time (epoch seconds); used as eventTime.
-     *                     If a stat with the same eventTime already exists, the insert is skipped.
-     */
-    public static Uri insertReadSession(Context context,
-                                        String title,
-                                        String path,
-                                        long durationMs,
-                                        int currPage,
-                                        int lastPage,
-                                        long startTimeSec) {
-
-        OnyxMetatadaContentProvider.init(context);
-        OnyxAccountContentProvider.init(context);
-
-        OnyxMetatadaContentProvider metadataProvider = OnyxMetatadaContentProvider.getInstance();
-        OnyxAccountContentProvider  accountProvider  = OnyxAccountContentProvider.getInstance();
-
-        Optional<OnyxMetatadaContentProvider.BookDataQueryResult> bookDataOpt =
-                metadataProvider.getBookDataQueryResult(path);
-        if (bookDataOpt.isEmpty()) {
-            Log.w(TAG, "Could not find book data for path: " + path);
-            return null;
-        }
-
-        Optional<String> accountIdOpt = accountProvider.getAccountId();
-        if (accountIdOpt.isEmpty()) {
-            Log.w(TAG, "Could not find accountId for logged in user");
-            return null;
-        }
-
-        long eventTimeMs = startTimeSec * 1000L;
-
-        // Dedup: skip if this exact eventTime already exists in Onyx.
-        if (eventTimeExists(context, eventTimeMs)) {
-            Log.d(TAG, "Duplicate eventTime=" + eventTimeMs + " — skipping insert");
-            return null;
-        }
-
-        float progress = lastPage > 0 ? (float) currPage / lastPage : 0f;
-
-        StatEntry entry = new StatEntry();
-        entry.accountId       = accountIdOpt.get();
-        entry.docId           = bookDataOpt.get().uuid;
-        entry.md5             = bookDataOpt.get().hashTag;
-        entry.title           = title;
-        entry.path            = path;
-        entry.type            = TYPE_READ_TIME;
-        entry.eventTime       = eventTimeMs;
-        entry.durationTime    = Math.min(durationMs, MAX_PAGE_DURATION_MS);
-        entry.currPage        = currPage;
-        entry.lastPage        = lastPage;
-        entry.readingProgress = progress;
-        entry.sid             = UUID.randomUUID().toString();
-        entry.action          = "add";
-
-        return insert(context, entry);
-    }
 
     /**
      * Backfills all missing reading history for a book from KOReader's stats DB.
-     *
+     * <p>
      * Called on every page turn so that any gaps (e.g. from sessions recorded before
      * this app was installed, or missed intents) are filled incrementally.
-     *
+     * <p>
      * Flow:
-     *  1. Fetch all (start_time, page, duration, total_pages) rows for this book from KOReader DB.
-     *  2. Fetch all eventTime values already recorded in Onyx for this book path.
-     *  3. Batch-insert only the rows whose start_time (×1000) is not already in Onyx.
+     * 1. Fetch all (start_time, page, duration, total_pages) rows for this book from KOReader DB.
+     * 2. Fetch all eventTime values already recorded in Onyx for this book path.
+     * 3. Batch-insert only the rows whose start_time (×1000) is not already in Onyx.
      *
      * @param koReaderDbPath path to KOReader's shared statistics.sqlite
      * @param md5            file MD5 — used to resolve id_book in KOReader's DB
@@ -204,7 +149,7 @@ public class OnyxStatisticsContentProvider {
         OnyxAccountContentProvider.init(context);
 
         OnyxMetatadaContentProvider metadataProvider = OnyxMetatadaContentProvider.getInstance();
-        OnyxAccountContentProvider  accountProvider  = OnyxAccountContentProvider.getInstance();
+        OnyxAccountContentProvider accountProvider = OnyxAccountContentProvider.getInstance();
 
         Optional<OnyxMetatadaContentProvider.BookDataQueryResult> bookDataOpt =
                 metadataProvider.getBookDataQueryResult(bookPath);
@@ -219,8 +164,8 @@ public class OnyxStatisticsContentProvider {
             return;
         }
 
-        String docId     = bookDataOpt.get().uuid;
-        String hashTag   = bookDataOpt.get().hashTag;
+        String docId = bookDataOpt.get().uuid;
+        String hashTag = bookDataOpt.get().hashTag;
         String accountId = accountIdOpt.get();
 
         // ------------------------------------------------------------------
@@ -320,19 +265,19 @@ public class OnyxStatisticsContentProvider {
             long durationMs = Math.min(row.durationSec * 1000L, MAX_PAGE_DURATION_MS);
 
             StatEntry entry = new StatEntry();
-            entry.accountId       = accountId;
-            entry.docId           = docId;
-            entry.md5             = hashTag;
-            entry.title           = title;
-            entry.path            = bookPath;
-            entry.type            = TYPE_READ_TIME;
-            entry.eventTime       = eventTimeMs;
-            entry.durationTime    = durationMs;
-            entry.currPage        = row.page;
-            entry.lastPage        = totalPages;
+            entry.accountId = accountId;
+            entry.docId = docId;
+            entry.md5 = hashTag;
+            entry.title = title;
+            entry.path = bookPath;
+            entry.type = TYPE_READ_TIME;
+            entry.eventTime = eventTimeMs;
+            entry.durationTime = durationMs;
+            entry.currPage = row.page;
+            entry.lastPage = totalPages;
             entry.readingProgress = progress;
-            entry.sid             = UUID.randomUUID().toString();
-            entry.action          = "add";
+            entry.sid = UUID.randomUUID().toString();
+            entry.action = "add";
 
             ops.add(ContentProviderOperation
                     .newInsert(CONTENT_URI)
@@ -368,41 +313,112 @@ public class OnyxStatisticsContentProvider {
 
     /**
      * Records that the user finished a book.
+     * No-ops if a TYPE_FINISH entry already exists for this book.
      */
-    public static Uri insertBookFinished(Context context,
-                                         String title,
-                                         String path) {
+    public static void insertBookFinished(Context context,
+                                          String title,
+                                          String path,
+                                          long timestamp) {
         OnyxMetatadaContentProvider.init(context);
         OnyxAccountContentProvider.init(context);
 
         OnyxMetatadaContentProvider metadataProvider = OnyxMetatadaContentProvider.getInstance();
-        OnyxAccountContentProvider  accountProvider  = OnyxAccountContentProvider.getInstance();
+        OnyxAccountContentProvider accountProvider = OnyxAccountContentProvider.getInstance();
 
         Optional<OnyxMetatadaContentProvider.BookDataQueryResult> bookDataOpt =
                 metadataProvider.getBookDataQueryResult(path);
         if (bookDataOpt.isEmpty()) {
             Log.w(TAG, "Could not find book data for path: " + path);
-            return null;
+            return;
         }
 
         Optional<String> accountIdOpt = accountProvider.getAccountId();
         if (accountIdOpt.isEmpty()) {
             Log.w(TAG, "Could not find accountId for logged in user");
-            return null;
+            return;
+        }
+
+        // Dedup: skip if a TYPE_FINISH entry already exists for this book.
+        try (Cursor c = context.getContentResolver().query(
+                CONTENT_URI,
+                new String[]{"id"},
+                "docId = ? AND type = ?",
+                new String[]{bookDataOpt.get().uuid, String.valueOf(TYPE_FINISH)},
+                null)) {
+            if (c != null && c.moveToFirst()) {
+                Log.d(TAG, "TYPE_FINISH already exists for " + path + " — skipping");
+                return;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Dedup query for TYPE_FINISH failed — proceeding with insert", e);
         }
 
         StatEntry entry = new StatEntry();
         entry.accountId = accountIdOpt.get();
-        entry.docId     = bookDataOpt.get().uuid;
-        entry.md5       = bookDataOpt.get().hashTag;
-        entry.title     = title;
-        entry.path      = path;
-        entry.type      = TYPE_FINISH;
-        entry.eventTime = System.currentTimeMillis();
-        entry.sid       = UUID.randomUUID().toString();
-        entry.action    = "add";
+        entry.docId = bookDataOpt.get().uuid;
+        entry.md5 = bookDataOpt.get().hashTag;
+        entry.title = title;
+        entry.path = path;
+        entry.name = title;
+        entry.type = TYPE_FINISH;
+        entry.eventTime = timestamp;
+        entry.sid = UUID.randomUUID().toString();
+        entry.action = "add";
 
-        return insert(context, entry);
+        insert(context, entry);
+    }
+
+    public static void insertBookOpened(Context context,
+                                        String title,
+                                        String path,
+                                        long timestamp) {
+        OnyxMetatadaContentProvider.init(context);
+        OnyxAccountContentProvider.init(context);
+
+        OnyxMetatadaContentProvider metadataProvider = OnyxMetatadaContentProvider.getInstance();
+        OnyxAccountContentProvider accountProvider = OnyxAccountContentProvider.getInstance();
+
+        Optional<OnyxMetatadaContentProvider.BookDataQueryResult> bookDataOpt =
+                metadataProvider.getBookDataQueryResult(path);
+        if (bookDataOpt.isEmpty()) {
+            Log.w(TAG, "Could not find book data for path: " + path);
+            return;
+        }
+
+        Optional<String> accountIdOpt = accountProvider.getAccountId();
+        if (accountIdOpt.isEmpty()) {
+            Log.w(TAG, "Could not find accountId for logged in user");
+            return;
+        }
+
+        // Dedup: skip if a TYPE_OPENED entry already exists for this book.
+        try (Cursor c = context.getContentResolver().query(
+                CONTENT_URI,
+                new String[]{"id"},
+                "docId = ? AND type = ?",
+                new String[]{bookDataOpt.get().uuid, String.valueOf(TYPE_OPENED)},
+                null)) {
+            if (c != null && c.moveToFirst()) {
+                Log.d(TAG, "TYPE_OPENED already exists for " + path + " — skipping");
+                return;
+            }
+        } catch (Exception e) {
+            Log.w(TAG, "Dedup query for TYPE_OPENED failed — proceeding with insert", e);
+        }
+
+        StatEntry entry = new StatEntry();
+        entry.accountId = accountIdOpt.get();
+        entry.docId = bookDataOpt.get().uuid;
+        entry.md5 = bookDataOpt.get().hashTag;
+        entry.title = title;
+        entry.path = path;
+        entry.name = title;
+        entry.type = TYPE_OPENED;
+        entry.eventTime = timestamp;
+        entry.sid = UUID.randomUUID().toString();
+        entry.action = "add";
+
+        insert(context, entry);
     }
 
     /**
@@ -416,21 +432,6 @@ public class OnyxStatisticsContentProvider {
     // Internal helpers
     // -------------------------------------------------------------------------
 
-    /** Returns true if any row with this eventTime already exists in Onyx. */
-    private static boolean eventTimeExists(Context context, long eventTimeMs) {
-        try (Cursor c = context.getContentResolver().query(
-                CONTENT_URI,
-                new String[]{"id"},
-                "eventTime = ?",
-                new String[]{String.valueOf(eventTimeMs)},
-                null)) {
-            return c != null && c.moveToFirst();
-        } catch (Exception e) {
-            Log.w(TAG, "eventTimeExists query failed", e);
-            return false; // proceed with insert on failure
-        }
-    }
-
     private static ContentValues toContentValues(StatEntry e) {
         if (e.eventTime == 0) {
             e.eventTime = System.currentTimeMillis();
@@ -438,28 +439,28 @@ public class OnyxStatisticsContentProvider {
 
         ContentValues cv = new ContentValues();
 
-        cv.put(COL_TYPE,             e.type);
-        cv.put(COL_STATUS,           e.status);
-        cv.put(COL_EVENT_TIME,       e.eventTime);
-        cv.put(COL_DURATION_TIME,    e.durationTime);
+        cv.put(COL_TYPE, e.type);
+        cv.put(COL_STATUS, e.status);
+        cv.put(COL_EVENT_TIME, e.eventTime);
+        cv.put(COL_DURATION_TIME, e.durationTime);
         cv.put(COL_READING_PROGRESS, e.readingProgress);
-        cv.put(COL_HIDE_RECORD,      e.hideRecord ? 1 : 0);
+        cv.put(COL_HIDE_RECORD, e.hideRecord ? 1 : 0);
 
         putIfNotNull(cv, COL_ACCOUNT_ID, e.accountId);
-        putIfNotNull(cv, COL_DOC_ID,     e.docId);
-        putIfNotNull(cv, COL_MD5,        e.md5);
-        putIfNotNull(cv, COL_NAME,       e.name);
-        putIfNotNull(cv, COL_TITLE,      e.title);
-        putIfNotNull(cv, COL_PATH,       e.path);
-        putIfNotNull(cv, COL_POSITION,   e.position);
-        putIfNotNull(cv, COL_CHAPTER,    e.chapter);
-        putIfNotNull(cv, COL_ORG_TEXT,   e.orgText);
-        putIfNotNull(cv, COL_NOTE,       e.note);
-        putIfNotNull(cv, COL_COMMENT,    e.comment);
+        putIfNotNull(cv, COL_DOC_ID, e.docId);
+        putIfNotNull(cv, COL_MD5, e.md5);
+        putIfNotNull(cv, COL_NAME, e.name);
+        putIfNotNull(cv, COL_TITLE, e.title);
+        putIfNotNull(cv, COL_PATH, e.path);
+        putIfNotNull(cv, COL_POSITION, e.position);
+        putIfNotNull(cv, COL_CHAPTER, e.chapter);
+        putIfNotNull(cv, COL_ORG_TEXT, e.orgText);
+        putIfNotNull(cv, COL_NOTE, e.note);
+        putIfNotNull(cv, COL_COMMENT, e.comment);
 
         if (e.currPage != null) cv.put(COL_CURR_PAGE, e.currPage);
         if (e.lastPage != null) cv.put(COL_LAST_PAGE, e.lastPage);
-        if (e.score    != null) cv.put(COL_SCORE,     e.score);
+        if (e.score != null) cv.put(COL_SCORE, e.score);
 
         return cv;
     }
@@ -470,15 +471,15 @@ public class OnyxStatisticsContentProvider {
 
     private static final class KoRow {
         final long startTimeSec;
-        final int  page;
+        final int page;
         final long durationSec;
-        final int  totalPages;
+        final int totalPages;
 
         KoRow(long startTimeSec, int page, long durationSec, int totalPages) {
             this.startTimeSec = startTimeSec;
-            this.page         = page;
-            this.durationSec  = durationSec;
-            this.totalPages   = totalPages;
+            this.page = page;
+            this.durationSec = durationSec;
+            this.totalPages = totalPages;
         }
     }
 }

@@ -83,7 +83,7 @@ public class SyncReceiver extends BroadcastReceiver {
         }
 
         if (ACTION_SINGLE.equals(action)) {
-            handleSingleSync(intent);
+            handleSingleSync(applicationContext, intent);
         } else if (ACTION_BULK.equals(action)) {
             handleBulkSync(applicationContext, intent);
         } else {
@@ -91,12 +91,14 @@ public class SyncReceiver extends BroadcastReceiver {
         }
     }
 
-    private static void handleSingleSync(Intent intent) {
+    private static void handleSingleSync(Context applicationContext, Intent intent) {
         Log.i(TAG, "=== handleSingleSync ===");
 
         String path = intent.getStringExtra("path");
         String progress = intent.getStringExtra("progress");
         Long timestamp = intent.getLongExtra("timestamp", System.currentTimeMillis());
+        String title = intent.getStringExtra("title");
+
         int status = intent.getIntExtra("readingStatus", 1);
         if (status == 0) {
             timestamp = null;
@@ -115,6 +117,13 @@ public class SyncReceiver extends BroadcastReceiver {
 
         try {
             boolean ok = OnyxMetatadaContentProvider.getInstance().syncProgress(path, progress, timestamp, status);
+            if (status == 2) {
+                OnyxStatisticsContentProvider
+                        .insertBookFinished(applicationContext, title, path, timestamp);
+            } else if (status == 1) {
+                OnyxStatisticsContentProvider
+                        .insertBookOpened(applicationContext, title, path, timestamp);
+            }
             Log.i(TAG, "Single sync " + path + " -> " + (ok ? "OK" : "FAIL"));
         } catch (Exception e) {
             Log.e(TAG, "Error in single sync", e);
@@ -158,7 +167,22 @@ public class SyncReceiver extends BroadcastReceiver {
 
         try {
             int updated = OnyxMetatadaContentProvider.getInstance().batchSync(books);
-            books.forEach(book -> OnyxStatisticsContentProvider.syncBookHistory(applicationContext, sDbPath, book.md5, book.title, book.path));
+            books.forEach(book -> OnyxStatisticsContentProvider
+                    .syncBookHistory(applicationContext, sDbPath, book.md5, book.title, book.path));
+            books.stream()
+                    .filter(bookDataInsertRequest -> bookDataInsertRequest.readingStatus == 2)
+                    .filter(req ->
+                            req.title != null && !req.title.trim().isEmpty()
+                    ).forEach(book -> OnyxStatisticsContentProvider
+                            .insertBookFinished(applicationContext, book.title, book.path, book.timestamp));
+            books.stream()
+                    .filter(bookDataInsertRequest -> bookDataInsertRequest.readingStatus == 1)
+                    .filter(req ->
+                            req.title != null && !req.title.trim().isEmpty()
+                    )
+                    .forEach(book -> OnyxStatisticsContentProvider
+                            .insertBookOpened(applicationContext, book.title, book.path, book.timestamp));
+
             Log.i(TAG, "Bulk sync updated " + updated + " of " + books.size() + " books");
         } catch (
                 Exception e) {

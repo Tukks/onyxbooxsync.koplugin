@@ -153,7 +153,7 @@ local function ensureJniCache(jni)
     logger.info("OnyxSync: JNI Cache initialized")
     return true
 end
-local function sendSyncIntent(jni, android, path, progress, timestamp, reading_status)
+local function sendSyncIntent(jni, android, path, progress, timestamp, reading_status, title)
     local env = jni.env
 
     if env[0].PushLocalFrame(env, 20) ~= 0 then
@@ -206,6 +206,10 @@ local function sendSyncIntent(jni, android, path, progress, timestamp, reading_s
         -- Add int extra for reading status
         local status_key = env[0].NewStringUTF(env, "readingStatus")
         env[0].CallObjectMethod(env, intent, put_extra_int, status_key, ffi.cast("jint", reading_status))
+
+        local title_key = env[0].NewStringUTF(env, "title")
+        local title_val = env[0].NewStringUTF(env, title)
+        env[0].CallObjectMethod(env, intent, put_extra_string, title_key, title_val)
 
         -- Get Activity class and sendBroadcast method
         local activity_class = env[0].GetObjectClass(env, activity)
@@ -303,7 +307,7 @@ local function sendBulkSyncIntent(jni, android, book_data)
 end
 
 
-local function updateOnyxProgress(path, progress, timestamp, reading_status)
+local function updateOnyxProgress(path, progress, timestamp, reading_status, title)
     local ok, android = pcall(require, "android")
     if not ok or not android or not android.app or not android.app.activity then
         logger.err("OnyxSync: Android module not available")
@@ -314,7 +318,7 @@ local function updateOnyxProgress(path, progress, timestamp, reading_status)
         return android.jni:context(android.app.activity.vm, function(jni)
             JNI_CACHE.initialized = false
             if not ensureJniCache(jni) then return -1 end
-            return sendSyncIntent(jni, android, path, progress, timestamp, reading_status)
+            return sendSyncIntent(jni, android, path, progress, timestamp, reading_status, title)
         end)
     end)
 
@@ -371,8 +375,9 @@ function OnyxSync:doSync()
 
     local progress = page_in_flow .. "/" .. total_in_flow
     local timestamp = os.time() * 1000
+    local title = self.ui.doc_props.display_title
 
-    updateOnyxProgress(self.ui.document.file, progress, timestamp, reading_status)
+    updateOnyxProgress(self.ui.document.file, progress, timestamp, reading_status, title)
 end
 
 local function sendPageTurnIntent(jni, android, path, md5, title)
@@ -426,7 +431,8 @@ end
 function OnyxSync:onPageUpdate()
     local path = self.ui.document.file
     local md5 = util.partialMD5(self.ui.document.file)
-    local title = path
+
+    local title = self.ui.doc_props.display_title
 
     local ok, android = pcall(require, "android")
     if ok and android then
@@ -527,13 +533,18 @@ local function updateAllBooks()
 
             local summary = doc_settings:readSetting("summary")
             local percent_finished = doc_settings:readSetting("percent_finished")
+            local props = doc_settings:readSetting("doc_props")
+            local title = (props and (props.title or props.display_title))
+                or ""
 
             local timestamp = os.time() * 1000
-            local history_ok, history_item = pcall(ReadHistory.getFileLastRead, ReadHistory, path)
-            if history_ok and history_item and history_item.time then
-                timestamp = history_item.time * 1000
+            if summary and summary.modified then
+                -- parse "YYYY-MM-DD" into a timestamp
+                local y, m, d = summary.modified:match("(%d+)-(%d+)-(%d+)")
+                if y then
+                    timestamp = os.time({ year = y, month = m, day = d, hour = 12, min = 0, sec = 0 }) * 1000
+                end
             end
-
             local reading_status = 0
             local progress = "0/1"
 
@@ -558,7 +569,7 @@ local function updateAllBooks()
                 timestamp = timestamp,
                 reading_status = reading_status,
                 md5 = util.partialMD5(path),
-                title = path
+                title = title or "",
             })
 
             doc_settings:close()

@@ -6,7 +6,8 @@ import android.content.Intent;
 import android.util.Log;
 
 import org.koreader.backgroundonyxsynckoreader.contentprovider.OnyxStatisticsContentProvider;
-
+// Todo add intent book finished
+// todo add sync on book finished
 public class PageTurnReceiver extends BroadcastReceiver {
 
     private static final String TAG = "PageTurnReceiver";
