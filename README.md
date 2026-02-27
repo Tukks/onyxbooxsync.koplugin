@@ -110,6 +110,18 @@ adb logcat -s OnyxStatisticsProvider:* PageTurnReceiver:* SyncReceiver:*
 adb logcat -s KOReader:*
 ```
 
+
+## Troubleshooting
+
+**Books not showing up in the Onyx library after a bulk update**
+
+The Onyx library needs to be rescanned to pick up newly indexed books:
+
+1. Open the Onyx Library app.
+2. Tap the menu icon in the upper right corner.
+3. Go to **Library Settings → Select folders → Rescan** (upper right corner).
+4. Come back to KOReader and run **Scan and update all books in current directory** again.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
