@@ -93,6 +93,9 @@ adb shell content query --uri content://com.onyx.kreader.statistics.provider/Ony
 adb shell content query \
   --uri content://com.onyx.kreader.statistics.provider/OnyxStatisticsModel \
   --projection "id,eventTime,durationTime,type,path" | grep "YourBookName"
+adb shell 'content query \
+  --uri content://com.onyx.content.database.ContentProvider/Metadata \
+  --where "nativeAbsolutePath='\''/storage/emulated/0/Books/Des fleurs pour Algernon - Daniel Keyes.epub'\'' OR id=1"'
 ```
 
 **Deploy the plugin during development**
@@ -110,6 +113,18 @@ adb logcat -s OnyxStatisticsProvider:* PageTurnReceiver:* SyncReceiver:*
 adb logcat -s KOReader:*
 ```
 
+**Delete already created Statistic**
+ ```sh
+ adb shell content delete \
+  --uri content://com.onyx.kreader.statistics.provider/OnyxStatisticsModel \
+  --where "type=\'1\'"
+adb shell content delete \
+  --uri content://com.onyx.kreader.statistics.provider/OnyxStatisticsModel \
+  --where "type=\'0\'"
+adb shell content delete \
+  --uri content://com.onyx.kreader.statistics.provider/OnyxStatisticsModel \
+  --where "type=\'6\'"
+  ```
 
 ## Troubleshooting
 
