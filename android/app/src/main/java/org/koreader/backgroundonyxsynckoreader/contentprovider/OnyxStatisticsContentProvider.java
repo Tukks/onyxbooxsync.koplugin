@@ -160,15 +160,14 @@ public class OnyxStatisticsContentProvider {
             return;
         }
 
-        Optional<String> accountIdOpt = accountProvider.getAccountId();
-        if (accountIdOpt.isEmpty()) {
-            Log.w(TAG, "syncBookHistory: no logged-in Onyx account");
-            return;
-        }
+        // No logged-in account is fine: the native Onyx reader also records
+        // sessions with a null accountId, and the reading-time calendar aggregates
+        // those. Requiring an account here meant KOReader reads never reached the
+        // calendar on account-less devices.
+        String accountId = accountProvider.getAccountId().orElse(null);
 
         String docId = bookDataOpt.get().uuid;
         String hashTag = bookDataOpt.get().hashTag;
-        String accountId = accountIdOpt.get();
 
         // ------------------------------------------------------------------
         // 1. Load all KOReader rows for this book.
@@ -342,11 +341,8 @@ public class OnyxStatisticsContentProvider {
             return;
         }
 
-        Optional<String> accountIdOpt = accountProvider.getAccountId();
-        if (accountIdOpt.isEmpty()) {
-            Log.w(TAG, "Could not find accountId for logged in user");
-            return;
-        }
+        // A null accountId mirrors the native reader and is accepted by the calendar.
+        String accountId = accountProvider.getAccountId().orElse(null);
 
         // Dedup: skip if a TYPE_FINISH entry already exists for this book.
         try (Cursor c = context.getContentResolver().query(
@@ -364,7 +360,7 @@ public class OnyxStatisticsContentProvider {
         }
 
         StatEntry entry = new StatEntry();
-        entry.accountId = accountIdOpt.get();
+        entry.accountId = accountId;
         entry.docId = bookDataOpt.get().uuid;
         entry.md5 = bookDataOpt.get().hashTag;
         entry.title = title;
@@ -395,11 +391,8 @@ public class OnyxStatisticsContentProvider {
             return;
         }
 
-        Optional<String> accountIdOpt = accountProvider.getAccountId();
-        if (accountIdOpt.isEmpty()) {
-            Log.w(TAG, "Could not find accountId for logged in user");
-            return;
-        }
+        // A null accountId mirrors the native reader and is accepted by the calendar.
+        String accountId = accountProvider.getAccountId().orElse(null);
 
         // Dedup: skip if a TYPE_OPENED entry already exists for this book.
         try (Cursor c = context.getContentResolver().query(
@@ -417,7 +410,7 @@ public class OnyxStatisticsContentProvider {
         }
 
         StatEntry entry = new StatEntry();
-        entry.accountId = accountIdOpt.get();
+        entry.accountId = accountId;
         entry.docId = bookDataOpt.get().uuid;
         entry.md5 = bookDataOpt.get().hashTag;
         entry.title = title;
