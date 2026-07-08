@@ -394,15 +394,22 @@ public class OnyxStatisticsContentProvider {
         // A null accountId mirrors the native reader and is accepted by the calendar.
         String accountId = accountProvider.getAccountId().orElse(null);
 
-        // Dedup: skip if a TYPE_OPENED entry already exists for this book.
+        // Dedup per calendar day, not per book forever. The Onyx "Today's Read"
+        // calendar lists a book on a day only if a TYPE_OPENED event carries that
+        // day's timestamp. The native reader emits one per open; we emit at most one
+        // per day so the book appears on every day it was actually read — an all-time
+        // dedup meant a book opened once (e.g. in the native reader) never got a
+        // fresh OPENED event and so never showed up again.
+        long[] day = dayBounds(timestamp);
         try (Cursor c = context.getContentResolver().query(
                 CONTENT_URI,
                 new String[]{"id"},
-                "docId = ? AND type = ?",
-                new String[]{bookDataOpt.get().uuid, String.valueOf(TYPE_OPENED)},
+                "docId = ? AND type = ? AND eventTime >= ? AND eventTime < ?",
+                new String[]{bookDataOpt.get().uuid, String.valueOf(TYPE_OPENED),
+                        String.valueOf(day[0]), String.valueOf(day[1])},
                 null)) {
             if (c != null && c.moveToFirst()) {
-                Log.d(TAG, "TYPE_OPENED already exists for " + path + " — skipping");
+                Log.d(TAG, "TYPE_OPENED already exists today for " + path + " — skipping");
                 return;
             }
         } catch (Exception e) {
@@ -429,6 +436,22 @@ public class OnyxStatisticsContentProvider {
      */
     public static Uri insert(Context context, StatEntry entry) {
         return context.getContentResolver().insert(CONTENT_URI, toContentValues(entry));
+    }
+
+    /**
+     * Returns {startOfDay, startOfNextDay} in epoch ms for the local calendar day
+     * containing {@code epochMs}. Uses the device time zone and is DST-safe.
+     */
+    private static long[] dayBounds(long epochMs) {
+        java.util.Calendar cal = java.util.Calendar.getInstance();
+        cal.setTimeInMillis(epochMs);
+        cal.set(java.util.Calendar.HOUR_OF_DAY, 0);
+        cal.set(java.util.Calendar.MINUTE, 0);
+        cal.set(java.util.Calendar.SECOND, 0);
+        cal.set(java.util.Calendar.MILLISECOND, 0);
+        long start = cal.getTimeInMillis();
+        cal.add(java.util.Calendar.DAY_OF_MONTH, 1);
+        return new long[]{start, cal.getTimeInMillis()};
     }
 
     // -------------------------------------------------------------------------

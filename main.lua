@@ -430,7 +430,11 @@ local function sendPageTurnIntent(jni, android, path, md5, title)
 end
 function OnyxSync:onPageUpdate()
     local path = self.ui.document.file
-    local md5 = util.partialMD5(self.ui.document.file)
+    -- Use KOReader's cached checksum (the key in statistics.sqlite3), not a live
+    -- re-hash: if the file's bytes changed since the sidecar was written they
+    -- diverge, and the companion app's book lookup by md5 fails.
+    local md5 = self.ui.doc_settings:readSetting("partial_md5_checksum")
+        or util.partialMD5(self.ui.document.file)
 
     local title = self.ui.doc_props.display_title
 
@@ -586,7 +590,7 @@ local function updateAllBooks()
                 progress = progress,
                 timestamp = timestamp,
                 reading_status = reading_status,
-                md5 = util.partialMD5(path),
+                md5 = doc_settings:readSetting("partial_md5_checksum") or util.partialMD5(path),
                 title = title or "",
             })
 
