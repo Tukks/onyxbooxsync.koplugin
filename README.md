@@ -7,6 +7,7 @@ Syncs KOReader reading progress and statistics into the Onyx Boox library so pro
 - Updates Onyx metadata with in-flow page/total pages.
 - Marks the book as reading, unopened or finished and updates last access timestamp.
 - Records reading time per page into Onyx reading statistics.
+- Surfaces reading time in the Onyx reading-time calendar / statistics — including days read entirely in KOReader — without requiring a logged-in Onyx account.
 - Backfills full reading history from KOReader's statistics database on every page turn.
 - Debounced syncing on page turns plus immediate sync on lifecycle events.
 
