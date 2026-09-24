@@ -428,18 +428,41 @@ local function sendPageTurnIntent(jni, android, path, md5, title)
     env[0].PopLocalFrame(env, nil)
     return ok
 end
-function OnyxSync:onPageUpdate()
-    local path = self.ui.document.file
-    local md5 = util.partialMD5(self.ui.document.file)
-
-    local title = self.ui.doc_props.display_title
-
+local function notifyPageTurn(path, md5, title)
     local ok, android = pcall(require, "android")
-    if ok and android then
-        android.jni:context(android.app.activity.vm, function(jni)
-            sendPageTurnIntent(jni, android, path, md5, title)
+    if ok and android and android.app and android.app.activity then
+        pcall(function()
+            android.jni:context(android.app.activity.vm, function(jni)
+                sendPageTurnIntent(jni, android, path, md5, title)
+            end)
         end)
     end
+end
+
+-- Returns the current book info needed by the PAGE_TURN intent, or nil when no document is open
+function OnyxSync:getPageTurnInfo()
+    if not self.ui or not self.ui.document or not Device:isAndroid() then return end
+    local path = self.ui.document.file
+    return path, util.partialMD5(path), self.ui.doc_props and self.ui.doc_props.display_title
+end
+
+-- The statistics plugin keeps page stats in memory and only writes them to its
+-- DB periodically. Force a write so the companion app reads up-to-date data.
+function OnyxSync:flushStatistics()
+    local statistics = self.ui and self.ui.statistics
+    if statistics and statistics.insertDB then
+        local ok, err = pcall(statistics.insertDB, statistics)
+        if not ok then
+            logger.warn("OnyxSync: Failed to flush statistics:", tostring(err))
+        end
+    end
+end
+
+function OnyxSync:onPageUpdate()
+    local path, md5, title = self:getPageTurnInfo()
+    if not path then return end
+
+    notifyPageTurn(path, md5, title)
 
     local curr_page = self.view.state.page or 1
     if math.abs(curr_page - self.last_synced_page) >= 5 then
@@ -459,6 +482,14 @@ end
 
 function OnyxSync:onCloseDocument()
     self:immediateSync()
+    -- Statistics plugin writes its DB in its own onCloseDocument, which runs after ours:
+    -- send the page turn intent on next tick so the companion app sees the final stats.
+    local path, md5, title = self:getPageTurnInfo()
+    if path then
+        UIManager:nextTick(function()
+            notifyPageTurn(path, md5, title)
+        end)
+    end
     JNI_CACHE.initialized = false
     logger.info("OnyxSync: Cache invalidated on document close")
 end
@@ -467,6 +498,12 @@ function OnyxSync:onSuspend()
     logger.info("OnyxSync: Suspending - invalidating JNI cache")
     JNI_CACHE.initialized = false
     self:immediateSync()
+    -- Going to the home screen suspends KOReader: flush stats and push them to Onyx now
+    local path, md5, title = self:getPageTurnInfo()
+    if path then
+        self:flushStatistics()
+        notifyPageTurn(path, md5, title)
+    end
 end
 
 function OnyxSync:onResume()
