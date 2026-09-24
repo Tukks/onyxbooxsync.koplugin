@@ -42,14 +42,16 @@ public class SyncReceiver extends BroadcastReceiver {
                 "BackgroundOnyxSyncKOReader::SyncWakelock");
         wakeLock.acquire(60 * 1000L /* 1 minute */);
 
-        try {
-            onHandleWork(context, intent);
-            Log.i(TAG, "Finish update");
-        } catch (Exception e) {
-            Log.e(TAG, "Error in onReceive", e);
-        } finally {
-            wakeLock.release();
-        }
+        BackgroundWork.run(this, () -> {
+            try {
+                onHandleWork(context, intent);
+                Log.i(TAG, "Finish update");
+            } catch (Exception e) {
+                Log.e(TAG, "Error in onReceive", e);
+            } finally {
+                if (wakeLock.isHeld()) wakeLock.release();
+            }
+        });
     }
 
     protected static void onHandleWork(Context applicationContext, Intent intent) {
