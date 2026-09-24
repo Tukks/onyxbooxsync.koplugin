@@ -2,10 +2,10 @@ package org.koreader.backgroundonyxsynckoreader.contentprovider;
 
 import android.content.ContentProviderClient;
 import android.content.ContentProviderOperation;
+import android.content.ContentProviderResult;
 import android.content.ContentResolver;
 import android.content.ContentValues;
 import android.content.Context;
-import android.content.res.Resources;
 import android.database.Cursor;
 import android.net.Uri;
 import android.util.Log;
@@ -72,7 +72,9 @@ public class OnyxMetatadaContentProvider {
                         .withSelection("nativeAbsolutePath = ?", new String[]{book.path}).build());
 
             }
-            client.applyBatch(operation);
+            for (ContentProviderResult result : client.applyBatch(operation)) {
+                if (result.count != null) updated += result.count;
+            }
 
         } catch (Exception e) {
             Log.e(TAG, "batchSync error", e);
@@ -143,27 +145,20 @@ public class OnyxMetatadaContentProvider {
     }
 
     public Optional<BookDataQueryResult> getBookDataQueryResult(String path) {
-        Cursor cursor = null;
-        try {
-
-            cursor = this.resolver.query(
-                    METADATA_URI,
-                    new String[]{"hashTag", "uuid", "nativeAbsolutePath", "progress", "readingStatus"},
-                    "nativeAbsolutePath = ?", new String[]{path}, null
-            );
-
-            if (cursor == null) {
-                throw new Resources.NotFoundException();
+        try (Cursor cursor = this.resolver.query(
+                METADATA_URI,
+                new String[]{"hashTag", "uuid", "nativeAbsolutePath", "progress", "readingStatus"},
+                "nativeAbsolutePath = ?", new String[]{path}, null
+        )) {
+            if (cursor == null || !cursor.moveToFirst()) {
+                Log.d(TAG, "getBookDataQueryResult: no metadata for " + path);
+                return Optional.empty();
             }
-
-            Log.i(TAG, "getBookDataQueryResult: " + cursor.getCount() + " row(s) found");
-            cursor.moveToFirst();
             return Optional.of(new BookDataQueryResult(cursor.getString(0),
                     cursor.getString(1), cursor.getString(2),
                     cursor.getString(3), cursor.getInt(4)));
-
         } catch (Exception e) {
-            Log.w(TAG, "logAllBooks error: " + e.getMessage());
+            Log.w(TAG, "getBookDataQueryResult error: " + e.getMessage());
         }
         return Optional.empty();
     }

@@ -13,12 +13,17 @@ android {
             minorApiLevel = 1
         }
     }
+    // Release signing is only configured when a keystore is provided (CI secrets or
+    // local.properties), so debug builds work without it.
+    def keystoreFile = System.getenv("KEYSTORE_FILE") ?: keystoreProperties["KEYSTORE_FILE"]
     signingConfigs {
         release {
-            storeFile file(System.getenv("KEYSTORE_FILE") ?: keystoreProperties["KEYSTORE_FILE"])
-            storePassword System.getenv("KEYSTORE_PASSWORD") ?: keystoreProperties["KEYSTORE_PASSWORD"]
-            keyAlias System.getenv("KEY_ALIAS") ?: keystoreProperties["KEY_ALIAS"]
-            keyPassword System.getenv("KEY_PASSWORD") ?: keystoreProperties["KEY_PASSWORD"]
+            if (keystoreFile) {
+                storeFile file(keystoreFile)
+                storePassword System.getenv("KEYSTORE_PASSWORD") ?: keystoreProperties["KEYSTORE_PASSWORD"]
+                keyAlias System.getenv("KEY_ALIAS") ?: keystoreProperties["KEY_ALIAS"]
+                keyPassword System.getenv("KEY_PASSWORD") ?: keystoreProperties["KEY_PASSWORD"]
+            }
         }
     }
 
@@ -27,23 +32,17 @@ android {
             signingConfig signingConfigs.release
             minifyEnabled false
             shrinkResources false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
         }
     }
     defaultConfig {
         applicationId "org.koreader.backgroundonyxsynckoreader"
         minSdk 24
         targetSdk 33
-        versionCode 5
-        versionName "5.0"
+        versionCode 6
+        versionName "6.0"
 
         testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
-    }
-
-    buildTypes {
-        release {
-            minifyEnabled false
-            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
-        }
     }
     compileOptions {
         sourceCompatibility JavaVersion.VERSION_11
@@ -53,8 +52,7 @@ android {
 }
 
 dependencies {
-    implementation libs.appcompat
-    implementation libs.material
+    implementation libs.core
     testImplementation libs.junit
     androidTestImplementation libs.ext.junit
     androidTestImplementation libs.espresso.core

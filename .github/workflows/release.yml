@@ -15,6 +15,20 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Check versions
+        run: |
+          meta_version=$(sed -n 's/^ *version *= *"\(v[^"]*\)".*/\1/p' _meta.lua)
+          if [ "$GITHUB_REF_NAME" != "$meta_version" ]; then
+            echo "::error::Tag $GITHUB_REF_NAME does not match _meta.lua version '$meta_version'"
+            exit 1
+          fi
+          min_code=$(sed -n 's/^local MIN_VERSION_CODE *= *\([0-9]*\).*/\1/p' main.lua)
+          version_code=$(sed -n 's/^ *versionCode *\([0-9]*\).*/\1/p' android/app/build.gradle)
+          if [ -z "$min_code" ] || [ -z "$version_code" ] || [ "$min_code" -gt "$version_code" ]; then
+            echo "::error::MIN_VERSION_CODE ($min_code) in main.lua must be <= versionCode ($version_code) in build.gradle"
+            exit 1
+          fi
+
       - name: Setup JDK
         uses: actions/setup-java@v4
         with:
