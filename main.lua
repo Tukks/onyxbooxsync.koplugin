@@ -8,7 +8,7 @@ local DocSettings = require("docsettings")
 local _ = require("gettext")
 local ConfirmBox = require("ui/widget/confirmbox")
 local util = require("util")
-local MIN_VERSION_CODE = 6 -- minimum APK required versionCode
+local MIN_VERSION_CODE = 7 -- minimum APK required versionCode
 local COMPANION_PACKAGE = "org.koreader.backgroundonyxsynckoreader"
 local COMPANION_RELEASES_URL = "https://github.com/Tukks/onyxbooxsync.koplugin/releases/latest"
 
