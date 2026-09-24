@@ -40,15 +40,17 @@ public class PageTurnReceiver extends BroadcastReceiver {
         // Sync all missing history for this book from KOReader's DB into Onyx.
         // This handles both the current page turn and any historical gaps
         // (e.g. sessions recorded before this app was installed).
-        OnyxStatisticsContentProvider.syncBookHistory(
-                context,
-                sDbPath,
-                md5,
-                title != null ? title : "",
-                bookPath
-        );
+        BackgroundWork.run(this, () -> {
+            OnyxStatisticsContentProvider.syncBookHistory(
+                    context,
+                    sDbPath,
+                    md5,
+                    title != null ? title : "",
+                    bookPath
+            );
 
-        // Force refresh of onyx widget
-        context.sendBroadcast(new Intent("com.onyx.statisticswidget.action.UPDATE"));
+            // Force refresh of onyx widget
+            context.sendBroadcast(new Intent("com.onyx.statisticswidget.action.UPDATE"));
+        });
     }
 }
