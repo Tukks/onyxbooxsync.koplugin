@@ -2,16 +2,12 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:tools="http://schemas.android.com/tools">
 
-    <permission android:name="org.koreader.backgroundonyxsynckoreader.permission.RECEIVE_SYNC_BROADCASTS" />
-
     <queries>
         <package android:name="com.onyx.kreader" />
     </queries>
 
-    <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
-    <!-- Inside <manifest> -->
+    <!-- Required to read KOReader's statistics database -->
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE"
         tools:ignore="ScopedStorage" />
 
@@ -44,7 +40,7 @@
             android:name=".helper.SyncReceiver"
             android:enabled="true"
             android:exported="true">
-            <intent-filter android:priority="1000">
+            <intent-filter>
                 <action android:name="org.koreader.onyx.SYNC_PROGRESS" />
                 <action android:name="org.koreader.onyx.BULK_SYNC" />
             </intent-filter>
@@ -56,14 +52,6 @@
             android:exported="true">
             <intent-filter>
                 <action android:name="org.koreader.onyx.PAGE_TURN" />
-            </intent-filter>
-        </receiver>
-
-        <receiver
-            android:name=".helper.BootReceiver"
-            android:exported="true">
-            <intent-filter>
-                <action android:name="android.intent.action.BOOT_COMPLETED" />
             </intent-filter>
         </receiver>
 

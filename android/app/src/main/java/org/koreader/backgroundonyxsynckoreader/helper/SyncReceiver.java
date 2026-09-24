@@ -27,27 +27,14 @@ public class SyncReceiver extends BroadcastReceiver {
 
     @Override
     public void onReceive(Context context, Intent intent) {
-        Log.i(TAG, "=== BROADCAST RECEIVED ===");
-
         if (intent == null) {
             Log.w(TAG, "Intent is null");
             return;
         }
 
-        String action = intent.getAction();
-        Log.i(TAG, "Action: " + action);
-
-        if (TextUtils.isEmpty(action)) {
+        if (TextUtils.isEmpty(intent.getAction())) {
             Log.w(TAG, "Action is empty");
             return;
-        }
-
-        // Log extras for debugging
-        if (intent.getExtras() != null) {
-            for (String key : intent.getExtras().keySet()) {
-                Object value = intent.getExtras().get(key);
-                Log.i(TAG, "Extra: " + key + " = " + value);
-            }
         }
 
         PowerManager powerManager = (PowerManager) context.getSystemService(Context.POWER_SERVICE);
@@ -67,20 +54,9 @@ public class SyncReceiver extends BroadcastReceiver {
 
     protected static void onHandleWork(Context applicationContext, Intent intent) {
         OnyxMetatadaContentProvider.init(applicationContext);
-        Log.i(TAG, "=== onHandleWork called ===");
-        Log.i(TAG, "Intent: " + intent);
 
         String action = intent.getAction();
         Log.i(TAG, "Handling action: " + action);
-
-        // Log all extras
-        if (intent.getExtras() != null) {
-            Log.i(TAG, "Intent extras:");
-            for (String key : intent.getExtras().keySet()) {
-                Object value = intent.getExtras().get(key);
-                Log.i(TAG, "  " + key + " = " + value);
-            }
-        }
 
         if (ACTION_SINGLE.equals(action)) {
             handleSingleSync(applicationContext, intent);
@@ -92,8 +68,6 @@ public class SyncReceiver extends BroadcastReceiver {
     }
 
     private static void handleSingleSync(Context applicationContext, Intent intent) {
-        Log.i(TAG, "=== handleSingleSync ===");
-
         String path = intent.getStringExtra("path");
         String progress = intent.getStringExtra("progress");
         Long timestamp = intent.getLongExtra("timestamp", System.currentTimeMillis());
@@ -104,11 +78,8 @@ public class SyncReceiver extends BroadcastReceiver {
             timestamp = null;
             progress = null;
         }
-        Log.i(TAG, "Single sync details:");
-        Log.i(TAG, "  Path: " + path);
-        Log.i(TAG, "  Progress: " + progress);
-        Log.i(TAG, "  Timestamp: " + timestamp);
-        Log.i(TAG, "  Status: " + status);
+        Log.d(TAG, "Single sync: path=" + path + " progress=" + progress
+                + " timestamp=" + timestamp + " status=" + status);
 
         if (TextUtils.isEmpty(path)) {
             Log.w(TAG, "Single sync with empty path");
@@ -133,10 +104,7 @@ public class SyncReceiver extends BroadcastReceiver {
     }
 
     private static void handleBulkSync(Context applicationContext, Intent intent) {
-        Log.i(TAG, "=== handleBulkSync ===");
-
         String jsonStr = intent.getStringExtra(EXTRA_BOOKS_JSON);
-        Log.i(TAG, "Bulk JSON data: " + jsonStr);
 
         if (TextUtils.isEmpty(jsonStr)) {
             Log.w(TAG, "Bulk sync with no JSON data");
@@ -159,7 +127,7 @@ public class SyncReceiver extends BroadcastReceiver {
                 book.title = obj.optString("title");
                 if (!TextUtils.isEmpty(book.path)) {
                     books.add(book);
-                    Log.i(TAG, "Updated book: " + book.path + " (" + book.progress + ")");
+                    Log.d(TAG, "Bulk book: " + book.path + " (" + book.progress + ")");
                 }
             }
         } catch (JSONException e) {

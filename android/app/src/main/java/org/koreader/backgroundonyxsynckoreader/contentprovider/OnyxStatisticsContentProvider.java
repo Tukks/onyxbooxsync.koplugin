@@ -10,6 +10,7 @@ import android.net.Uri;
 import android.util.Log;
 
 import java.util.ArrayList;
+import java.util.Calendar;
 import java.util.HashSet;
 import java.util.Optional;
 import java.util.Set;
@@ -133,7 +134,7 @@ public class OnyxStatisticsContentProvider {
      * <p>
      * Flow:
      * 1. Fetch all (start_time, page, duration, total_pages) rows for this book from KOReader DB.
-     * 2. Fetch all eventTime values already recorded in Onyx for this book path.
+     * 2. Fetch all eventTime values already recorded in Onyx for this book (by docId).
      * 3. Batch-insert only the rows whose start_time (×1000) is not already in Onyx.
      *
      * @param koReaderDbPath path to KOReader's shared statistics.sqlite
@@ -160,15 +161,12 @@ public class OnyxStatisticsContentProvider {
             return;
         }
 
-        Optional<String> accountIdOpt = accountProvider.getAccountId();
-        if (accountIdOpt.isEmpty()) {
-            Log.w(TAG, "syncBookHistory: no logged-in Onyx account");
-            return;
-        }
+        // The native reader writes rows with a null accountId when no Onyx account
+        // is logged in, and the reading calendar aggregates them all the same.
+        String accountId = accountProvider.getAccountId().orElse(null);
 
         String docId = bookDataOpt.get().uuid;
         String hashTag = bookDataOpt.get().hashTag;
-        String accountId = accountIdOpt.get();
 
         // ------------------------------------------------------------------
         // 1. Load all KOReader rows for this book.
@@ -231,14 +229,17 @@ public class OnyxStatisticsContentProvider {
         }
 
         // ------------------------------------------------------------------
-        // 2. Fetch all eventTime values already present in Onyx for this path.
+        // 2. Fetch all eventTime values already present in Onyx for this book.
+        //    Matched by docId rather than path so moving the file doesn't
+        //    re-insert its whole history. Falls back to path if docId is unknown.
         // ------------------------------------------------------------------
         Set<Long> existingEventTimes = new HashSet<>();
+        boolean hasDocId = docId != null && !docId.isEmpty();
         try (Cursor c = context.getContentResolver().query(
                 CONTENT_URI,
                 new String[]{COL_EVENT_TIME},
-                "path = ?",
-                new String[]{bookPath},
+                (hasDocId ? COL_DOC_ID : COL_PATH) + " = ?",
+                new String[]{hasDocId ? docId : bookPath},
                 null)) {
             if (c != null) {
                 while (c.moveToNext()) {
@@ -262,7 +263,9 @@ public class OnyxStatisticsContentProvider {
                 continue; // already synced
             }
 
-            int totalPages = canonicalTotalPages > 0 ? canonicalTotalPages : row.totalPages;
+            // row.page is relative to the page count at the time it was recorded
+            // (it changes with font size/margins), so prefer the row's own total.
+            int totalPages = row.totalPages > 0 ? row.totalPages : canonicalTotalPages;
             float progress = totalPages > 0 ? (float) row.page / totalPages : 0f;
             long durationMs = Math.min(row.durationSec * 1000L, MAX_PAGE_DURATION_MS);
 
@@ -342,12 +345,6 @@ public class OnyxStatisticsContentProvider {
             return;
         }
 
-        Optional<String> accountIdOpt = accountProvider.getAccountId();
-        if (accountIdOpt.isEmpty()) {
-            Log.w(TAG, "Could not find accountId for logged in user");
-            return;
-        }
-
         // Dedup: skip if a TYPE_FINISH entry already exists for this book.
         try (Cursor c = context.getContentResolver().query(
                 CONTENT_URI,
@@ -364,7 +361,7 @@ public class OnyxStatisticsContentProvider {
         }
 
         StatEntry entry = new StatEntry();
-        entry.accountId = accountIdOpt.get();
+        entry.accountId = accountProvider.getAccountId().orElse(null);
         entry.docId = bookDataOpt.get().uuid;
         entry.md5 = bookDataOpt.get().hashTag;
         entry.title = title;
@@ -395,21 +392,18 @@ public class OnyxStatisticsContentProvider {
             return;
         }
 
-        Optional<String> accountIdOpt = accountProvider.getAccountId();
-        if (accountIdOpt.isEmpty()) {
-            Log.w(TAG, "Could not find accountId for logged in user");
-            return;
-        }
-
-        // Dedup: skip if a TYPE_OPENED entry already exists for this book.
+        // Dedup per calendar day: "Today's Read" lists books with a TYPE_OPENED
+        // event on that day, and the native reader emits one each session.
+        long[] day = dayBounds(timestamp);
         try (Cursor c = context.getContentResolver().query(
                 CONTENT_URI,
                 new String[]{"id"},
-                "docId = ? AND type = ?",
-                new String[]{bookDataOpt.get().uuid, String.valueOf(TYPE_OPENED)},
+                "docId = ? AND type = ? AND eventTime >= ? AND eventTime < ?",
+                new String[]{bookDataOpt.get().uuid, String.valueOf(TYPE_OPENED),
+                        String.valueOf(day[0]), String.valueOf(day[1])},
                 null)) {
             if (c != null && c.moveToFirst()) {
-                Log.d(TAG, "TYPE_OPENED already exists for " + path + " — skipping");
+                Log.d(TAG, "TYPE_OPENED already exists today for " + path + " — skipping");
                 return;
             }
         } catch (Exception e) {
@@ -417,7 +411,7 @@ public class OnyxStatisticsContentProvider {
         }
 
         StatEntry entry = new StatEntry();
-        entry.accountId = accountIdOpt.get();
+        entry.accountId = accountProvider.getAccountId().orElse(null);
         entry.docId = bookDataOpt.get().uuid;
         entry.md5 = bookDataOpt.get().hashTag;
         entry.title = title;
@@ -473,6 +467,19 @@ public class OnyxStatisticsContentProvider {
         if (e.score != null) cv.put(COL_SCORE, e.score);
 
         return cv;
+    }
+
+    /** Returns [start, end) of the local calendar day containing {@code timestampMs}. */
+    private static long[] dayBounds(long timestampMs) {
+        Calendar cal = Calendar.getInstance();
+        cal.setTimeInMillis(timestampMs);
+        cal.set(Calendar.HOUR_OF_DAY, 0);
+        cal.set(Calendar.MINUTE, 0);
+        cal.set(Calendar.SECOND, 0);
+        cal.set(Calendar.MILLISECOND, 0);
+        long start = cal.getTimeInMillis();
+        cal.add(Calendar.DAY_OF_MONTH, 1);
+        return new long[]{start, cal.getTimeInMillis()};
     }
 
     private static void putIfNotNull(ContentValues cv, String key, String value) {

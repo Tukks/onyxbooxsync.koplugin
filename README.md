@@ -8,6 +8,7 @@ Syncs KOReader reading progress and statistics into the Onyx Boox library so pro
 - Marks the book as reading, unopened or finished and updates last access timestamp.
 - Records reading time per page into Onyx reading statistics.
 - Backfills full reading history from KOReader's statistics database on every page turn.
+- Books read in KOReader show up in Onyx's "Today's Read" and reading calendar, with or without a logged-in Onyx account.
 - Debounced syncing on page turns plus immediate sync on lifecycle events.
 
 ## Requirements
@@ -17,7 +18,7 @@ Syncs KOReader reading progress and statistics into the Onyx Boox library so pro
 
 ## How It Works
 
-The plugin communicates with a small companion app running as a background service. This is necessary because KOReader's JNI bridge is not stable enough to write to the Onyx content provider directly from Lua. The companion app has no UI — it runs silently in the background and handles all content provider writes on behalf of the plugin.
+The plugin sends broadcast intents to a small companion app. This is necessary because KOReader's JNI bridge is not stable enough to write to the Onyx content provider directly from Lua. The companion app has no UI and no long-running service: Android starts it briefly whenever the plugin sends a broadcast, and it handles all content provider writes on behalf of the plugin.
 
 ### Reading Statistics
 
@@ -33,7 +34,7 @@ On every page turn, the companion app reads KOReader's `statistics.sqlite3` data
 ### 1. Companion App
 
 1. Download and install `onyx-sync.apk` from the [latest release](../../releases/latest).
-2. Long press the app icon on the home screen and tap **Unfreeze** — Onyx freezes newly installed apps by default, which would prevent the service from running in the background.
+2. Long press the app icon on the home screen and tap **Unfreeze** — Onyx freezes newly installed apps by default, which would prevent it from receiving the plugin's broadcasts.
 3. Launch the app once — a permission dialog will appear asking for **All files access**. Grant it so the app can read KOReader's statistics database. Nothing else will appear on screen; the app will close automatically.
 
 ### 2. Plugin
@@ -69,7 +70,7 @@ Install the [UpdatesManager plugin](https://github.com/advokatb/updatesmanager.k
 - Only runs on Android devices (no effect on other platforms).
 - Only tested on Boox Go 7.
 - Completion is detected from KOReader summary status or when the last page in the main flow is reached.
-- The companion app has no UI. Launching it once is only needed to grant the storage permission and initialize the background service.
+- The companion app has no UI. Launching it once is needed to grant the storage permission and to take the app out of Android's "stopped" state — until then, it does not receive the plugin's broadcasts.
 - Reading time shown in your Onyx account may differ slightly from KOReader's own statistics screen if the book was previously opened in the native Onyx reader — those sessions are counted in Onyx but not in KOReader.
 
 ## Bulk Update
@@ -104,7 +105,7 @@ adb shell 'content query \
 
 **Deploy the plugin during development**
 ```sh
-adb push ./main.lua /sdcard/koreader/plugins/onyx_sync.koplugin/main.lua
+adb push ./main.lua /sdcard/koreader/plugins/onyxbooxsync.koplugin/main.lua
 ```
 
 **View companion app logs**
@@ -163,7 +164,7 @@ The Onyx library needs to be rescanned to pick up newly indexed books:
    git push origin v0.0.X
    ```
 
-4. GitHub Actions will pick up the new tag and publish a release automatically.
+4. GitHub Actions will pick up the new tag and publish a release automatically. The workflow fails early if the tag doesn't match the `_meta.lua` version, or if `MIN_VERSION_CODE` in `main.lua` is higher than the APK's `versionCode`.
 
 ### Release with a new companion APK
 
